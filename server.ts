@@ -93,6 +93,11 @@ try {
 function saveDatabase() {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    const publicApiDir = path.resolve(__dirname, 'public', 'api');
+    if (fs.existsSync(publicApiDir)) {
+      fs.writeFileSync(path.join(publicApiDir, 'data.json'), JSON.stringify(db), 'utf-8');
+      fs.writeFileSync(path.join(publicApiDir, 'data'), JSON.stringify(db), 'utf-8');
+    }
   } catch (err) {
     console.error('Failed to save database file:', err);
   }

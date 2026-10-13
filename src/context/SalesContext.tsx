@@ -138,7 +138,21 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [salesReps, setSalesReps] = useState<SalesRep[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.REPS);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Check if cache contains stale default mock data (e.g. PSY- codes, Siam Paragon, or unsplash avatars)
+          const isStaleMock = parsed.some(
+            (r: SalesRep) =>
+              r.code?.startsWith('PSY-') ||
+              r.branch?.includes('Siam Paragon') ||
+              r.avatarUrl?.includes('unsplash.com')
+          );
+          if (!isStaleMock) {
+            return parsed;
+          }
+        }
+      }
     } catch (e) {
       console.warn('Error reading reps cache', e);
     }
@@ -246,21 +260,39 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // Initial fetch from central database to ensure immediate consistency
   useEffect(() => {
-    fetch('/api/data')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
+    const fetchCentralData = async () => {
+      try {
+        let data = null;
+        const res = await fetch('/api/data').catch(() => null);
+        if (res && res.ok) {
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            data = await res.json().catch(() => null);
+          }
+        }
+        // Fallback for deployed environments (e.g. Vercel, static preview)
+        if (!data) {
+          const fallbackRes = await fetch('/api/data.json').catch(() => null);
+          if (fallbackRes && fallbackRes.ok) {
+            data = await fallbackRes.json().catch(() => null);
+          }
+        }
         if (!data) return;
+
         if (data.records) setRecords(data.records);
         if (data.salesReps && Array.isArray(data.salesReps)) {
           setSalesReps((prevLocal) => {
             const serverIds = new Set(data.salesReps.map((r: SalesRep) => r.id));
             const serverNames = new Set(data.salesReps.map((r: SalesRep) => r.name.trim()));
             const extraLocal = prevLocal.filter(
-              (r) => !serverIds.has(r.id) && !serverNames.has(r.name.trim())
+              (r) =>
+                !serverIds.has(r.id) &&
+                !serverNames.has(r.name.trim()) &&
+                !r.code?.startsWith('PSY-') &&
+                !r.branch?.includes('Siam Paragon')
             );
             if (extraLocal.length > 0) {
               const merged = [...data.salesReps, ...extraLocal];
-              // Persist merged reps to server
               fetch('/api/reps', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -277,10 +309,12 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (data.sheetsConfig) setSheetsConfig(data.sheetsConfig);
         if (data.syncLogs) setSyncLogs(data.syncLogs);
         setIsRealtimeConnected(true);
-      })
-      .catch((err) => {
+      } catch (err) {
         console.warn('Initial server fetch skipped or server starting:', err);
-      });
+      }
+    };
+
+    fetchCentralData();
 
     // Check if opened with a team share link e.g. ?sheetUrl=https%3A%2F%2Fdocs.google.com...
     try {

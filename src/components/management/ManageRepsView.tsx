@@ -70,10 +70,10 @@ export const ManageRepsView: React.FC = () => {
     name: '',
     nickname: '',
     avatarUrl: '',
-    role: 'Curtain Specialist',
+    role: 'Sales Representative',
     phone: '',
     email: '',
-    branch: 'Siam Paragon Branch',
+    branch: 'Curtain Center',
     status: 'active',
     joinedDate: new Date().toISOString().split('T')[0],
   });
@@ -82,14 +82,14 @@ export const ManageRepsView: React.FC = () => {
     setEditingRep(null);
     setFormError(null);
     setFormData({
-      code: `PSY-${String(salesReps.length + 101).padStart(4, '0')}`,
+      code: `T${String(60000 + salesReps.length * 111)}`,
       name: '',
       nickname: '',
       avatarUrl: AVATAR_PRESETS[0],
-      role: 'Curtain Specialist',
-      phone: '081-456-7890',
+      role: 'Sales Representative',
+      phone: '',
       email: '',
-      branch: 'Siam Paragon Branch',
+      branch: 'Curtain Center',
       status: 'active',
       joinedDate: new Date().toISOString().split('T')[0],
     });
@@ -604,7 +604,7 @@ export const ManageRepsView: React.FC = () => {
                         ? 'bg-slate-50 border border-slate-200 text-slate-900'
                         : 'bg-slate-900 border border-slate-700 text-white'
                     }`}
-                    placeholder="เช่น PSY-0101"
+                    placeholder="เช่น T46160"
                   />
                 </div>
                 <div>

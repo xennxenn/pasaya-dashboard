@@ -2,7 +2,11 @@
   "framework": "vite",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api/data",
+      "destination": "/api/data.json"
+    },
+    {
+      "source": "/((?!api|avatars|assets).*)$",
       "destination": "/index.html"
     }
   ]

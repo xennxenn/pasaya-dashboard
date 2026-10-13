@@ -40,6 +40,7 @@ export const GoogleSheetsSyncModal: React.FC = () => {
   const [autoSync, setAutoSync] = useState(sheetsConfig.autoSync ?? true);
   const [intervalSec, setIntervalSec] = useState(sheetsConfig.syncIntervalSec || 30);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [hasCopiedLink, setHasCopiedLink] = useState(false);
 
   React.useEffect(() => {
     if (isSyncModalOpen) {
@@ -48,6 +49,7 @@ export const GoogleSheetsSyncModal: React.FC = () => {
       setAutoSync(sheetsConfig.autoSync ?? true);
       setIntervalSec(sheetsConfig.syncIntervalSec || 30);
       setFeedback(null);
+      setHasCopiedLink(false);
     }
   }, [
     isSyncModalOpen,
@@ -87,8 +89,6 @@ export const GoogleSheetsSyncModal: React.FC = () => {
       setFeedback({ type: 'success', text: 'บันทึกการตั้งค่าเรียบร้อยแล้ว' });
     }
   };
-
-  const [hasCopiedLink, setHasCopiedLink] = useState(false);
 
   const handleCopyTeamLink = () => {
     try {
