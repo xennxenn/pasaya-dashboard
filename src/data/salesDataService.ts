@@ -1,0 +1,572 @@
+import type {
+  SalesRecord,
+  SalesRep,
+  MonthlyTarget,
+  MonthName,
+  QuarterName,
+  SidebarMenuItem,
+  AppSettings,
+  GoogleSheetsConfig,
+  SyncLogEntry,
+} from '../types/index.ts';
+import { RAW_CSV_DATA } from './rawCsv.ts';
+
+export const MONTH_NAMES: MonthName[] = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+export const MONTH_SHORT_EN: Record<MonthName, string> = {
+  January: 'JAN',
+  February: 'FEB',
+  March: 'MAR',
+  April: 'APR',
+  May: 'MAY',
+  June: 'JUN',
+  July: 'JUL',
+  August: 'AUG',
+  September: 'SEP',
+  October: 'OCT',
+  November: 'NOV',
+  December: 'DEC',
+};
+
+export const MONTH_SHORT_TH: Record<MonthName, string> = {
+  January: 'ม.ค.',
+  February: 'ก.พ.',
+  March: 'มี.ค.',
+  April: 'เม.ย.',
+  May: 'พ.ค.',
+  June: 'มิ.ย.',
+  July: 'ก.ค.',
+  August: 'ส.ค.',
+  September: 'ก.ย.',
+  October: 'ต.ค.',
+  November: 'พ.ย.',
+  December: 'ธ.ค.',
+};
+
+export const MONTH_FULL_TH: Record<MonthName, string> = {
+  January: 'มกราคม',
+  February: 'กุมภาพันธ์',
+  March: 'มีนาคม',
+  April: 'เมษายน',
+  May: 'พฤษภาคม',
+  June: 'มิถุนายน',
+  July: 'กรกฎาคม',
+  August: 'สิงหาคม',
+  September: 'กันยายน',
+  October: 'ตุลาคม',
+  November: 'พฤศจิกายน',
+  December: 'ธันวาคม',
+};
+
+export function parseCsvLine(text: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+export function normalizeMonthName(input: string | undefined): MonthName | null {
+  if (!input) return null;
+  const clean = input.trim().toLowerCase();
+
+  // English exact or prefix
+  if (clean.startsWith('jan') || clean === '1' || clean === '01' || clean === 'มกราคม' || clean === 'ม.ค.') return 'January';
+  if (clean.startsWith('feb') || clean === '2' || clean === '02' || clean === 'กุมภาพันธ์' || clean === 'ก.พ.') return 'February';
+  if (clean.startsWith('mar') || clean === '3' || clean === '03' || clean === 'มีนาคม' || clean === 'มี.ค.') return 'March';
+  if (clean.startsWith('apr') || clean === '4' || clean === '04' || clean === 'เมษายน' || clean === 'เม.ย.') return 'April';
+  if (clean.startsWith('may') || clean === '5' || clean === '05' || clean === 'พฤษภาคม' || clean === 'พ.ค.') return 'May';
+  if (clean.startsWith('jun') || clean === '6' || clean === '06' || clean === 'มิถุนายน' || clean === 'มิ.ย.') return 'June';
+  if (clean.startsWith('jul') || clean === '7' || clean === '07' || clean === 'กรกฎาคม' || clean === 'ก.ค.') return 'July';
+  if (clean.startsWith('aug') || clean === '8' || clean === '08' || clean === 'สิงหาคม' || clean === 'ส.ค.') return 'August';
+  if (clean.startsWith('sep') || clean === '9' || clean === '09' || clean === 'กันยายน' || clean === 'ก.ย.') return 'September';
+  if (clean.startsWith('oct') || clean === '10' || clean === 'ตุลาคม' || clean === 'ต.ค.') return 'October';
+  if (clean.startsWith('nov') || clean === '11' || clean === 'พฤศจิกายน' || clean === 'พ.ย.') return 'November';
+  if (clean.startsWith('dec') || clean === '12' || clean === 'ธันวาคม' || clean === 'ธ.ค.') return 'December';
+
+  return null;
+}
+
+export function normalizeYearValue(input: number | string | undefined): number {
+  if (!input) return 0;
+  let year = typeof input === 'number' ? input : parseInt(String(input).replace(/[^0-9]/g, ''), 10);
+  if (isNaN(year)) return 0;
+  // Thai Buddhist Era (พ.ศ. e.g. 2566 -> 2023, 2567 -> 2024, 2568 -> 2025, 2569 -> 2026)
+  if (year > 2400 && year < 2700) {
+    year -= 543;
+  } else if (year < 100) {
+    year += 2000;
+  }
+  return year;
+}
+
+export function parseRawCsv(csvText: string): SalesRecord[] {
+  const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length <= 1) return [];
+
+  // Parse header line to detect column layout
+  const headerCols = parseCsvLine(lines[0]).map((c) => c.toLowerCase().trim());
+  let yearIdx = 0;
+  let monthIdx = 1;
+  let repIdx = 2;
+  let mtoIdx = 3;
+  let fabricIdx = 4;
+  let beddingIdx = 5;
+  let totalIdx = 6;
+  let rankIdx = 7;
+  let quarterIdx = 8;
+  let ordersIdx = 9;
+
+  let hasCustomHeader = false;
+  headerCols.forEach((col, idx) => {
+    if (col.includes('year') || col.includes('ปี') || col.includes('พ.ศ.') || col.includes('ค.ศ.')) {
+      yearIdx = idx;
+      hasCustomHeader = true;
+    } else if (col.includes('month') || col.includes('เดือน')) {
+      monthIdx = idx;
+      hasCustomHeader = true;
+    } else if (col.includes('person') || col.includes('rep') || col.includes('พนักงาน') || col.includes('ชื่อ') || col.includes('เซลส์')) {
+      repIdx = idx;
+      hasCustomHeader = true;
+    } else if (col.includes('mto') || col.includes('ม่าน')) {
+      mtoIdx = idx;
+      hasCustomHeader = true;
+    } else if (col.includes('fabric') || col.includes('ผ้า')) {
+      fabricIdx = idx;
+      hasCustomHeader = true;
+    } else if (col.includes('bedding') || col.includes('เตียง') || col.includes('ผ้าปู') || col.includes('เครื่องนอน')) {
+      beddingIdx = idx;
+      hasCustomHeader = true;
+    } else if (col.includes('total') || col.includes('รวม') || col.includes('ยอดรวม') || col.includes('ยอดขายรวม')) {
+      totalIdx = idx;
+      hasCustomHeader = true;
+    } else if (col.includes('rank') || col.includes('อันดับ')) {
+      rankIdx = idx;
+    } else if (col.includes('quarter') || col.includes('ไตรมาส') || col.includes('qtr')) {
+      quarterIdx = idx;
+    } else if (col.includes('order') || col.includes('ออเดอร์') || col.includes('คำสั่งซื้อ') || col.includes('งาน')) {
+      ordersIdx = idx;
+    }
+  });
+
+  const startIndex = hasCustomHeader ? 1 : 1;
+  const records: SalesRecord[] = [];
+
+  const cleanNum = (val: string | undefined): number => {
+    if (!val) return 0;
+    const stripped = val.replace(/,/g, '').replace(/฿/g, '').replace(/"/g, '').trim();
+    const n = parseFloat(stripped);
+    return isNaN(n) ? 0 : n;
+  };
+
+  for (let i = startIndex; i < lines.length; i++) {
+    const cols = parseCsvLine(lines[i]);
+    if (cols.length < 3) continue;
+
+    const rawYear = cols[yearIdx];
+    const year = normalizeYearValue(rawYear);
+    const month = normalizeMonthName(cols[monthIdx]);
+    const salesPerson = (cols[repIdx] || '').trim();
+
+    if (!year || !month || !salesPerson) continue;
+
+    const salesMTO = cleanNum(cols[mtoIdx]);
+    const salesFabric = cleanNum(cols[fabricIdx]);
+    const salesBedding = cleanNum(cols[beddingIdx]);
+    let salesTotal = cleanNum(cols[totalIdx]);
+    if (salesTotal === 0 && (salesMTO > 0 || salesFabric > 0 || salesBedding > 0)) {
+      salesTotal = salesMTO + salesFabric + salesBedding;
+    }
+
+    const rankVal = cols[rankIdx] ? parseInt(cols[rankIdx].replace(/[^0-9]/g, ''), 10) : undefined;
+    const rawQuarter = (cols[quarterIdx] || '').toUpperCase();
+    const quarter = (['Q1', 'Q2', 'Q3', 'Q4'].includes(rawQuarter) ? rawQuarter : getQuarterFromMonth(month)) as QuarterName;
+    const orders = cleanNum(cols[ordersIdx]);
+    const monthNum = MONTH_NAMES.indexOf(month) + 1;
+
+    records.push({
+      id: `${year}-${monthNum}-${salesPerson}-${i}`,
+      year,
+      month,
+      monthNum: monthNum > 0 ? monthNum : 1,
+      salesPerson,
+      salesMTO,
+      salesFabric,
+      salesBedding,
+      salesTotal,
+      rank: isNaN(rankVal as number) ? undefined : rankVal,
+      quarter,
+      orders,
+    });
+  }
+
+  return records;
+}
+
+// Auto-detect and reconcile sales reps from records
+export function extractUniqueRepsFromRecords(records: SalesRecord[], existingReps: SalesRep[]): SalesRep[] {
+  const existingNames = new Set(existingReps.map((r) => r.name.trim()));
+  const existingNicknames = new Set(existingReps.map((r) => r.nickname?.trim() || ''));
+
+  const newReps: SalesRep[] = [];
+  const presetAvatars = [
+    'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=256',
+    'https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&q=80&w=256',
+    'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&q=80&w=256',
+    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256',
+    'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=256',
+    'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=256',
+  ];
+
+  const uniqueNames = Array.from(new Set(records.map((r) => r.salesPerson.trim())));
+
+  uniqueNames.forEach((name) => {
+    if (!name || name === 'รวมทั้งหมด' || name === 'ยอดขายรวม' || name.toLowerCase().includes('total')) return;
+    if (existingNames.has(name)) return;
+
+    // Extract nickname from parentheses e.g. "ภัทรธิดา (หมวย) สุภรพงษ์" -> "หมวย"
+    const nickMatch = name.match(/\(([^)]+)\)/);
+    const nickname = nickMatch ? nickMatch[1].trim() : name.split(' ')[0];
+
+    const count = existingReps.length + newReps.length + 1;
+    const newId = `EMP-${String(count).padStart(3, '0')}`;
+    const code = `PSY-${String(100 + count).padStart(4, '0')}`;
+    const avatarUrl = presetAvatars[(count - 1) % presetAvatars.length];
+
+    const rep: SalesRep = {
+      id: newId,
+      code,
+      name,
+      nickname,
+      avatarUrl,
+      role: 'Curtain & Sales Specialist',
+      phone: `08${Math.floor(10000000 + Math.random() * 90000000)}`,
+      email: `${nickname.toLowerCase() || 'sales'}.psy@pasaya.com`,
+      branch: 'PASAYA Showroom',
+      status: 'active',
+      joinedDate: '2023-01-01',
+    };
+
+    newReps.push(rep);
+    existingNames.add(name);
+  });
+
+  return [...existingReps, ...newReps];
+}
+
+export function getQuarterFromMonth(month: MonthName): QuarterName {
+  const idx = MONTH_NAMES.indexOf(month);
+  if (idx < 3) return 'Q1';
+  if (idx < 6) return 'Q2';
+  if (idx < 9) return 'Q3';
+  return 'Q4';
+}
+
+// Initial Sales Representatives
+export const INITIAL_SALES_REPS: SalesRep[] = [
+  {
+    id: 'EMP-001',
+    code: 'PSY-0101',
+    name: 'ภัทยา (ปอนด์) นาแพงเมือง',
+    nickname: 'ปอนด์',
+    avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=256',
+    role: 'Senior Curtain Specialist',
+    phone: '081-456-7890',
+    email: 'patthaya.n@pasaya.com',
+    branch: 'Siam Paragon Branch',
+    status: 'active',
+    joinedDate: '2023-01-15',
+  },
+  {
+    id: 'EMP-002',
+    code: 'PSY-0102',
+    name: 'สุเทพ (เทพ) ดำศรี',
+    nickname: 'เทพ',
+    avatarUrl: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&q=80&w=256',
+    role: 'Senior Project Consultant',
+    phone: '089-234-5678',
+    email: 'suthep.d@pasaya.com',
+    branch: 'Mega Bangna Branch',
+    status: 'active',
+    joinedDate: '2023-02-01',
+  },
+  {
+    id: 'EMP-003',
+    code: 'PSY-0103',
+    name: 'ฐิติญา (ออย) ชัยรถ',
+    nickname: 'ออย',
+    avatarUrl: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&q=80&w=256',
+    role: 'Curtain Stylist & Sales Lead',
+    phone: '082-345-6789',
+    email: 'thitiya.c@pasaya.com',
+    branch: 'Central Embassy Branch',
+    status: 'active',
+    joinedDate: '2023-03-10',
+  },
+  {
+    id: 'EMP-004',
+    code: 'PSY-0104',
+    name: 'ณาตฏิกา (ณาต) กุมารสิทธิ์',
+    nickname: 'ณาต',
+    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=256',
+    role: 'Fabric & Decor Consultant',
+    phone: '083-456-7891',
+    email: 'nattika.k@pasaya.com',
+    branch: 'EmQuartier Branch',
+    status: 'active',
+    joinedDate: '2023-04-12',
+  },
+  {
+    id: 'EMP-005',
+    code: 'PSY-0105',
+    name: 'ธนัท (ตี้) จิรเศวตโชติ',
+    nickname: 'ตี้',
+    avatarUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=256',
+    role: 'Senior Sales Consultant',
+    phone: '084-567-8902',
+    email: 'thanat.j@pasaya.com',
+    branch: 'Central Chidlom Branch',
+    status: 'active',
+    joinedDate: '2023-05-18',
+  },
+  {
+    id: 'EMP-006',
+    code: 'PSY-0106',
+    name: 'ธัญญ์ชยา (ตูน) ธนาศิริทิพย์',
+    nickname: 'ตูน',
+    avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=256',
+    role: 'Interior Curtain Advisor',
+    phone: '085-678-9013',
+    email: 'thanchaya.t@pasaya.com',
+    branch: 'Central Ladprao Branch',
+    status: 'active',
+    joinedDate: '2023-06-01',
+  },
+  {
+    id: 'EMP-007',
+    code: 'PSY-0107',
+    name: 'ณัฐกฤตา (พู่กัน) แท่งทอง',
+    nickname: 'พู่กัน',
+    avatarUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&q=80&w=256',
+    role: 'Curtain Specialist',
+    phone: '086-789-0124',
+    email: 'nattakritta.t@pasaya.com',
+    branch: 'Central World Branch',
+    status: 'active',
+    joinedDate: '2024-01-10',
+  },
+  {
+    id: 'EMP-008',
+    code: 'PSY-0108',
+    name: 'อำนาจ (เค) แซ่โง้ว',
+    nickname: 'เค',
+    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=256',
+    role: 'Project Sales Executive',
+    phone: '087-890-1235',
+    email: 'amnat.s@pasaya.com',
+    branch: 'IconSiam Branch',
+    status: 'active',
+    joinedDate: '2024-02-15',
+  },
+  {
+    id: 'EMP-009',
+    code: 'PSY-0109',
+    name: 'มนัสสิทธิ์ (นพส์) โชคสุนทรนิธิ',
+    nickname: 'นพส์',
+    avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=256',
+    role: 'Consultant',
+    phone: '088-901-2346',
+    email: 'manassit.c@pasaya.com',
+    branch: 'Headquarters Flagship',
+    status: 'inactive',
+    joinedDate: '2023-01-01',
+  },
+  {
+    id: 'EMP-010',
+    code: 'PSY-0110',
+    name: 'จันทกานต์ (เจมี่) แทนทรัพย์',
+    nickname: 'เจมี่',
+    avatarUrl: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&q=80&w=256',
+    role: 'Sales Representative',
+    phone: '089-012-3457',
+    email: 'jantakarn.t@pasaya.com',
+    branch: 'Central Rama 9 Branch',
+    status: 'inactive',
+    joinedDate: '2023-01-01',
+  },
+  {
+    id: 'EMP-011',
+    code: 'PSY-0111',
+    name: 'ภัทรธิดา (หมวย) สุภรพงษ์',
+    nickname: 'หมวย',
+    avatarUrl: 'https://images.unsplash.com/photo-1548142813-c348350df52b?auto=format&fit=crop&q=80&w=256',
+    role: 'Sales Representative',
+    phone: '090-123-4568',
+    email: 'patthida.s@pasaya.com',
+    branch: 'The Mall Bangkapi Branch',
+    status: 'active',
+    joinedDate: '2025-08-01',
+  },
+  {
+    id: 'EMP-012',
+    code: 'PSY-0112',
+    name: 'อภิชาติ (เจ) ทองแย้ม',
+    nickname: 'เจ',
+    avatarUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&q=80&w=256',
+    role: 'Sales Representative',
+    phone: '091-234-5679',
+    email: 'aphichat.t@pasaya.com',
+    branch: 'Central Westgate Branch',
+    status: 'inactive',
+    joinedDate: '2025-06-01',
+  },
+];
+
+// Initial Monthly Targets
+export function generateInitialTargets(): MonthlyTarget[] {
+  const targets: MonthlyTarget[] = [];
+  const years = [2026, 2025, 2024, 2023];
+
+  for (const year of years) {
+    for (let m = 1; m <= 12; m++) {
+      const monthName = MONTH_NAMES[m - 1];
+      // Team monthly target defaults around 5.0 - 5.5 million
+      let teamTarget = 5200000;
+      if (year === 2026) teamTarget = 5500000;
+      if (year === 2024) teamTarget = 5000000;
+      if (year === 2023) teamTarget = 4800000;
+
+      // Special quarter targets
+      if (m === 8 || m === 11) teamTarget += 500000; // high season
+      if (m === 6 || m === 4) teamTarget -= 300000;
+
+      const individualTargets: Record<string, number> = {};
+      INITIAL_SALES_REPS.filter((r) => r.status === 'active').forEach((rep) => {
+        individualTargets[rep.id] = Math.round(teamTarget / 7 / 10000) * 10000;
+      });
+
+      targets.push({
+        year,
+        monthNum: m,
+        monthName,
+        teamTarget,
+        individualTargets,
+      });
+    }
+  }
+  return targets;
+}
+
+// Initial Sidebar Menu Items
+export const INITIAL_SIDEBAR_ITEMS: SidebarMenuItem[] = [
+  {
+    id: 'overview',
+    label: 'Overview ภาพรวมยอดขาย',
+    icon: 'LayoutDashboard',
+    visible: true,
+    order: 1,
+  },
+  {
+    id: 'analytics',
+    label: 'กราฟวิเคราะห์ & สัดส่วนสินค้า',
+    icon: 'TrendingUp',
+    visible: true,
+    order: 2,
+  },
+  {
+    id: 'sales-reps',
+    label: 'อันดับ & ผลงานทีมขาย',
+    icon: 'Award',
+    visible: true,
+    order: 3,
+  },
+  {
+    id: 'team-targets',
+    label: 'จัดการเป้าหมายยอดขาย (KPI)',
+    icon: 'Target',
+    visible: true,
+    order: 4,
+  },
+  {
+    id: 'manage-reps',
+    label: 'จัดการข้อมูลพนักงานขาย',
+    icon: 'Users',
+    visible: true,
+    order: 5,
+  },
+  {
+    id: 'manage-sidebar',
+    label: 'จัดการหน้าเมนู Sidebar',
+    icon: 'Menu',
+    visible: true,
+    order: 6,
+  },
+  {
+    id: 'data-sheet',
+    label: 'ชีทข้อมูล Sales Report',
+    icon: 'FileSpreadsheet',
+    visible: true,
+    order: 7,
+  },
+  {
+    id: 'settings',
+    label: 'ตั้งค่า & ปรับสี Font',
+    icon: 'Settings',
+    visible: true,
+    order: 8,
+  },
+];
+
+// App Default Settings
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  themeMode: 'dark',
+  fontTheme: 'cyan',
+  ytdCutoffMonth: 9, // September cutoff per prompt requirement
+  autoCalculateYTD: false,
+  companyName: 'PASAYA Curtain Center',
+  currency: '฿',
+  showAppLogo: true,
+  appLogoUrl: '',
+  logoSize: 'md',
+  logoDarkBacking: true, // Show frosted light backing in dark mode by default so black logos are visible
+  logoInvertInDark: false,
+  waterDropletEffect: true, // Realistic liquid glass water droplet cursor
+};
+
+export const DEFAULT_GOOGLE_SHEETS_CONFIG: GoogleSheetsConfig = {
+  sheetUrl: '',
+  sheetName: '',
+  autoSync: true,
+  syncIntervalSec: 30,
+  lastSyncTime: null,
+  lastSyncStatus: 'idle',
+  lastSyncMessage: 'พร้อมเชื่อมต่อ Google Sheets',
+  syncCount: 0,
+  syncedRowCount: 0,
+};
+

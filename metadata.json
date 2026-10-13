@@ -1,0 +1,6 @@
+{
+  "name": "PASAYA Curtain Center",
+  "description": "ระบบแดชบอร์ดรายงานยอดขายและวิเคราะห์ข้อมูลเชิงลึก PASAYA Curtain Center แบบเรียลไทม์ พร้อมการจัดการพนักงานขายและเป้าหมายยอดขาย",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
