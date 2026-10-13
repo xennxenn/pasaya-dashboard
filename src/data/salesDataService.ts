@@ -144,32 +144,34 @@ export function parseRawCsv(csvText: string): SalesRecord[] {
 
   let hasCustomHeader = false;
   headerCols.forEach((col, idx) => {
-    if (col.includes('year') || col.includes('ปี') || col.includes('พ.ศ.') || col.includes('ค.ศ.')) {
+    const c = col.toLowerCase().trim();
+    if (c.includes('year') || c.includes('ปี') || c.includes('พ.ศ.') || c.includes('ค.ศ.')) {
       yearIdx = idx;
       hasCustomHeader = true;
-    } else if (col.includes('month') || col.includes('เดือน')) {
+    } else if (c.includes('month') || c.includes('เดือน')) {
       monthIdx = idx;
       hasCustomHeader = true;
-    } else if (col.includes('person') || col.includes('rep') || col.includes('พนักงาน') || col.includes('ชื่อ') || col.includes('เซลส์')) {
+    } else if (c.includes('person') || c.includes('rep') || c.includes('พนักงาน') || c.includes('ชื่อ') || c.includes('เซลส์')) {
       repIdx = idx;
       hasCustomHeader = true;
-    } else if (col.includes('mto') || col.includes('ม่าน')) {
-      mtoIdx = idx;
-      hasCustomHeader = true;
-    } else if (col.includes('fabric') || col.includes('ผ้า')) {
-      fabricIdx = idx;
-      hasCustomHeader = true;
-    } else if (col.includes('bedding') || col.includes('เตียง') || col.includes('ผ้าปู') || col.includes('เครื่องนอน')) {
+    } else if (c.includes('bedding') || c.includes('เตียง') || c.includes('ผ้าปู') || c.includes('เครื่องนอน')) {
+      // Must check bedding/bed before fabric ('ผ้า') because 'ผ้าปู' contains 'ผ้า'
       beddingIdx = idx;
       hasCustomHeader = true;
-    } else if (col.includes('total') || col.includes('รวม') || col.includes('ยอดรวม') || col.includes('ยอดขายรวม')) {
+    } else if (c.includes('fabric') || (c.includes('ผ้า') && !c.includes('ผ้าปู') && !c.includes('ม่าน'))) {
+      fabricIdx = idx;
+      hasCustomHeader = true;
+    } else if (c.includes('mto') || c.includes('ม่าน') || c.includes('curtain')) {
+      mtoIdx = idx;
+      hasCustomHeader = true;
+    } else if (c.includes('ยอดขายรวม') || c.includes('ยอดรวม') || c.includes('รวมทั้งสิ้น') || c.includes('total') || c.includes('grand total') || (c.includes('รวม') && !c.includes('ม่าน') && !c.includes('ผ้า'))) {
       totalIdx = idx;
       hasCustomHeader = true;
-    } else if (col.includes('rank') || col.includes('อันดับ')) {
+    } else if (c.includes('rank') || c.includes('อันดับ')) {
       rankIdx = idx;
-    } else if (col.includes('quarter') || col.includes('ไตรมาส') || col.includes('qtr')) {
+    } else if (c.includes('quarter') || c.includes('ไตรมาส') || c.includes('qtr')) {
       quarterIdx = idx;
-    } else if (col.includes('order') || col.includes('ออเดอร์') || col.includes('คำสั่งซื้อ') || col.includes('งาน')) {
+    } else if (c.includes('order') || c.includes('ออเดอร์') || c.includes('คำสั่งซื้อ') || c.includes('งาน')) {
       ordersIdx = idx;
     }
   });
@@ -179,7 +181,18 @@ export function parseRawCsv(csvText: string): SalesRecord[] {
 
   const cleanNum = (val: string | undefined): number => {
     if (!val) return 0;
-    const stripped = val.replace(/,/g, '').replace(/฿/g, '').replace(/"/g, '').trim();
+    // Remove NBSP, whitespace, carriage returns, commas, currency symbols
+    let stripped = val
+      .replace(/[\u00A0\r\n\t ]/g, '')
+      .replace(/,/g, '')
+      .replace(/฿|THB|\$/gi, '')
+      .replace(/"|'/g, '')
+      .trim();
+    if (!stripped) return 0;
+    // Accounting parentheses: (123) -> -123
+    if (stripped.startsWith('(') && stripped.endsWith(')')) {
+      stripped = '-' + stripped.slice(1, -1);
+    }
     const n = parseFloat(stripped);
     return isNaN(n) ? 0 : n;
   };
@@ -191,16 +204,35 @@ export function parseRawCsv(csvText: string): SalesRecord[] {
     const rawYear = cols[yearIdx];
     const year = normalizeYearValue(rawYear);
     const month = normalizeMonthName(cols[monthIdx]);
-    const salesPerson = (cols[repIdx] || '').trim();
+    let salesPerson = (cols[repIdx] || '').trim();
 
     if (!year || !month || !salesPerson) continue;
+
+    // Normalize summary row naming
+    const cleanPerson = salesPerson.toLowerCase();
+    if (
+      cleanPerson === 'รวมทั้งหมด' ||
+      cleanPerson === 'รวม' ||
+      cleanPerson === 'ยอดรวม' ||
+      cleanPerson === 'รวมทั้งสิ้น' ||
+      cleanPerson === 'total' ||
+      cleanPerson === 'grand total' ||
+      cleanPerson === 'summary'
+    ) {
+      salesPerson = 'รวมทั้งหมด';
+    }
 
     const salesMTO = cleanNum(cols[mtoIdx]);
     const salesFabric = cleanNum(cols[fabricIdx]);
     const salesBedding = cleanNum(cols[beddingIdx]);
+    const componentSum = salesMTO + salesFabric + salesBedding;
     let salesTotal = cleanNum(cols[totalIdx]);
-    if (salesTotal === 0 && (salesMTO > 0 || salesFabric > 0 || salesBedding > 0)) {
-      salesTotal = salesMTO + salesFabric + salesBedding;
+
+    // Ensure total is never lower than the sum of its explicit product components
+    if (salesTotal === 0 && componentSum > 0) {
+      salesTotal = componentSum;
+    } else if (componentSum > salesTotal && salesTotal > 0) {
+      salesTotal = componentSum;
     }
 
     const rankVal = cols[rankIdx] ? parseInt(cols[rankIdx].replace(/[^0-9]/g, ''), 10) : undefined;

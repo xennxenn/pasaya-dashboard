@@ -19,6 +19,7 @@ import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_GOOGLE_SHEETS_CONFIG,
   MONTH_NAMES,
+  extractUniqueRepsFromRecords,
 } from '../data/salesDataService';
 
 interface MonthDetailPopup {
@@ -280,6 +281,31 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       .catch((err) => {
         console.warn('Initial server fetch skipped or server starting:', err);
       });
+
+    // Check if opened with a team share link e.g. ?sheetUrl=https%3A%2F%2Fdocs.google.com...
+    try {
+      if (typeof window !== 'undefined' && window.location.search) {
+        const searchParams = new URLSearchParams(window.location.search);
+        const sharedUrl = searchParams.get('sheetUrl') || searchParams.get('sheet');
+        if (sharedUrl) {
+          const decoded = decodeURIComponent(sharedUrl).trim();
+          if (decoded.startsWith('http') || decoded.length > 20) {
+            setSheetsConfig((prev) => ({
+              ...prev,
+              sheetUrl: decoded,
+              autoSync: true,
+            }));
+            fetch('/api/sheets/config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sheetUrl: decoded, autoSync: true }),
+            }).catch(() => {});
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Error reading share link parameter:', e);
+    }
   }, []);
 
   // Connect to SSE Realtime Stream: Realtime sync across all users and Google Sheets
@@ -407,33 +433,34 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     });
 
-    // Check if any month was missing 'รวมทั้งหมด', calculate sum of individual sales reps if so
+    // Check individual sales reps sums and reconcile with summary row
     uniqueYears.forEach((y) => {
       for (let m = 1; m <= 12; m++) {
         const cur = yearMonthTotals[y][m];
-        if (cur.total === 0) {
-          const repRows = records.filter(
-            (r) => r.year === y && r.monthNum === m && r.salesPerson !== 'รวมทั้งหมด'
-          );
-          if (repRows.length > 0) {
-            let mtoSum = 0;
-            let fabSum = 0;
-            let bedSum = 0;
-            let totSum = 0;
-            let ordSum = 0;
-            repRows.forEach((row) => {
-              mtoSum += row.salesMTO;
-              fabSum += row.salesFabric;
-              bedSum += row.salesBedding;
-              totSum += row.salesTotal;
-              ordSum += row.orders;
-            });
+        const repRows = records.filter(
+          (r) => r.year === y && r.monthNum === m && r.salesPerson !== 'รวมทั้งหมด'
+        );
+        if (repRows.length > 0) {
+          let mtoSum = 0;
+          let fabSum = 0;
+          let bedSum = 0;
+          let totSum = 0;
+          let ordSum = 0;
+          repRows.forEach((row) => {
+            mtoSum += row.salesMTO;
+            fabSum += row.salesFabric;
+            bedSum += row.salesBedding;
+            totSum += row.salesTotal;
+            ordSum += row.orders;
+          });
+
+          if (cur.total === 0 || totSum > cur.total) {
             yearMonthTotals[y][m] = {
-              mto: mtoSum,
-              fabric: fabSum,
-              bedding: bedSum,
-              total: totSum,
-              orders: ordSum,
+              mto: Math.max(cur.mto, mtoSum),
+              fabric: Math.max(cur.fabric, fabSum),
+              bedding: Math.max(cur.bedding, bedSum),
+              total: Math.max(cur.total, totSum),
+              orders: Math.max(cur.orders, ordSum),
             };
           }
         }
@@ -844,16 +871,21 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const triggerGoogleSheetsSync = useCallback(async () => {
     setIsSyncingSheets(true);
     try {
-      const res = await fetch('/api/sheets/sync', { method: 'POST' });
-      const data = await res.json();
-
-      // If server returned success, finish
-      if (data.success) {
-        setIsSyncingSheets(false);
-        return data;
+      // 1. First attempt: If running full-stack with server, trigger server-side sync & SSE broadcast
+      try {
+        const res = await fetch('/api/sheets/sync', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.success) {
+            setIsSyncingSheets(false);
+            return data;
+          }
+        }
+      } catch {
+        // Server not available (e.g. running on Vercel static deployment) -> seamlessly proceed to client engine
       }
 
-      // If server failed, try client-side direct fetch fallback
+      // 2. Second attempt / Vercel engine: Direct browser-to-Google Sheets fetch
       if (sheetsConfig.sheetUrl?.trim()) {
         const rawUrl = sheetsConfig.sheetUrl.trim();
         const idMatch = rawUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
@@ -863,44 +895,114 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const timestamp = Date.now();
 
         const testUrls: string[] = [];
+
+        // Handle published CSV or gviz link directly
+        if (rawUrl.includes('pub?output=csv') || rawUrl.includes('gviz/tq?tqx=out:csv')) {
+          const sep = rawUrl.includes('?') ? '&' : '?';
+          testUrls.push(`${rawUrl}${sep}_t=${timestamp}`);
+          testUrls.push(rawUrl);
+        } else if (rawUrl.includes('/pubhtml') || rawUrl.includes('/pub?')) {
+          const converted = rawUrl.replace(/\/pubhtml.*/, '/pub?output=csv').replace(/\/pub\?.*/, '/pub?output=csv');
+          testUrls.push(`${converted}&_t=${timestamp}`);
+          testUrls.push(converted);
+        }
+
         if (idMatch) {
+          // Google Visualization API CSV Export with cache buster (most reliable)
           testUrls.push(`https://docs.google.com/spreadsheets/d/${idMatch[1]}/gviz/tq?tqx=out:csv${gidParam}${sheetParam}&headers=1&_t=${timestamp}`);
+          // Direct export format=csv
           testUrls.push(`https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv${gidParam}&_t=${timestamp}`);
+          testUrls.push(`https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv`);
         } else if (rawUrl.startsWith('http')) {
           testUrls.push(rawUrl);
         }
 
+        let fetchedText = '';
+        let lastErrorText = '';
+
         for (const tUrl of testUrls) {
           try {
-            const resp = await fetch(tUrl);
+            const resp = await fetch(tUrl, {
+              headers: {
+                'Accept': 'text/csv, text/plain, */*',
+                'Cache-Control': 'no-cache',
+              },
+            });
             if (resp.ok) {
               const text = await resp.text();
-              if (text.length > 20 && !text.includes('<!DOCTYPE html>')) {
-                const parsed = parseRawCsv(text);
-                if (parsed.length > 0) {
-                  setRecords(parsed);
-                  await fetch('/api/records', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ records: parsed }),
-                  });
-                  setIsSyncingSheets(false);
-                  return {
-                    success: true,
-                    message: `ซิงค์ข้อมูลเรียลไทม์สำเร็จ (${parsed.length} แถว)`,
-                    rowCount: parsed.length,
-                  };
-                }
+              if (text.includes('accounts.google.com') || text.includes('<!DOCTYPE html>') || text.includes('<html')) {
+                lastErrorText = 'Google Sheet ต้องถูกตั้งค่าเป็น "ทุกคนที่มีลิงก์มีสิทธิ์ดู" (Anyone with the link can view)';
+                continue;
               }
+              if (text.trim().length > 10) {
+                fetchedText = text;
+                break;
+              }
+            } else {
+              lastErrorText = `HTTP ${resp.status}: ไม่สามารถเข้าถึงชีทได้`;
             }
-          } catch {
-            // continue next candidate
+          } catch (fetchErr) {
+            lastErrorText = fetchErr instanceof Error ? fetchErr.message : 'เชื่อมต่อ Google Sheets ไม่สำเร็จ';
           }
         }
+
+        if (fetchedText) {
+          const parsed = parseRawCsv(fetchedText);
+          if (parsed.length > 0) {
+            setRecords(parsed);
+            setSalesReps((prev) => extractUniqueRepsFromRecords(parsed, prev));
+
+            const successMsg = `ซิงค์เรียลไทม์สำเร็จพบ ${parsed.length} แถว`;
+            setSheetsConfig((prev) => ({
+              ...prev,
+              lastSyncTime: new Date().toISOString(),
+              lastSyncStatus: 'success',
+              lastSyncMessage: successMsg,
+              syncedRowCount: parsed.length,
+              syncCount: (prev.syncCount || 0) + 1,
+            }));
+
+            setSyncLogs((prev) => [
+              {
+                id: `log-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                type: 'google_sheets',
+                status: 'success',
+                message: successMsg,
+                rowCount: parsed.length,
+              },
+              ...prev.slice(0, 49),
+            ]);
+
+            // If backend is running, also persist to server database
+            fetch('/api/records', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ records: parsed }),
+            }).catch(() => {});
+
+            setIsSyncingSheets(false);
+            return {
+              success: true,
+              message: successMsg,
+              rowCount: parsed.length,
+            };
+          }
+        }
+
+        const failMsg = lastErrorText || 'ไม่พบแถวข้อมูลยอดขายที่ถูกต้องในไฟล์ Google Sheet';
+        setSheetsConfig((prev) => ({
+          ...prev,
+          lastSyncTime: new Date().toISOString(),
+          lastSyncStatus: 'error',
+          lastSyncMessage: failMsg,
+        }));
+        setIsSyncingSheets(false);
+        return { success: false, message: failMsg };
       }
 
       setIsSyncingSheets(false);
-      return data;
+      return { success: false, message: 'ยังไม่ได้ระบุลิงก์ Google Sheets' };
     } catch (err) {
       setIsSyncingSheets(false);
       return {
@@ -909,6 +1011,28 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       };
     }
   }, [sheetsConfig]);
+
+  // Client-side background auto-sync loop (vital for Vercel/standalone deployments and continuous live sync)
+  useEffect(() => {
+    if (!sheetsConfig.autoSync || !sheetsConfig.sheetUrl?.trim()) return;
+
+    const intervalSec = Math.max(10, sheetsConfig.syncIntervalSec || 30);
+    const timer = setInterval(() => {
+      triggerGoogleSheetsSync().catch((e) => console.warn('Background auto-sync:', e));
+    }, intervalSec * 1000);
+
+    return () => clearInterval(timer);
+  }, [sheetsConfig.autoSync, sheetsConfig.sheetUrl, sheetsConfig.syncIntervalSec, triggerGoogleSheetsSync]);
+
+  // Initial startup sync if Google Sheets link is already configured
+  useEffect(() => {
+    if (sheetsConfig.sheetUrl?.trim() && sheetsConfig.autoSync) {
+      const startupTimer = setTimeout(() => {
+        triggerGoogleSheetsSync().catch(() => {});
+      }, 1500);
+      return () => clearTimeout(startupTimer);
+    }
+  }, []);
 
   // Update Google Sheets Configuration on central server
   const updateGoogleSheetsConfig = useCallback(async (newConfig: Partial<GoogleSheetsConfig>) => {

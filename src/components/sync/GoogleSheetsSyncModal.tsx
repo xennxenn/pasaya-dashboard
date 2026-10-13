@@ -12,6 +12,10 @@ import {
   Layers,
   Sparkles,
   Link2,
+  Copy,
+  Share2,
+  Users,
+  Monitor,
 } from 'lucide-react';
 import { useSales } from '../../context/SalesContext';
 import { formatNumber } from '../../utils/formatters';
@@ -81,6 +85,29 @@ export const GoogleSheetsSyncModal: React.FC = () => {
       }
     } else {
       setFeedback({ type: 'success', text: 'บันทึกการตั้งค่าเรียบร้อยแล้ว' });
+    }
+  };
+
+  const [hasCopiedLink, setHasCopiedLink] = useState(false);
+
+  const handleCopyTeamLink = () => {
+    try {
+      const currentUrl = new URL(window.location.href);
+      if (inputUrl.trim()) {
+        currentUrl.searchParams.set('sheetUrl', inputUrl.trim());
+      }
+      navigator.clipboard.writeText(currentUrl.toString());
+      setHasCopiedLink(true);
+      setTimeout(() => setHasCopiedLink(false), 3000);
+      setFeedback({
+        type: 'success',
+        text: 'คัดลอกลิงก์แชร์ให้ทีมงานสำเร็จ! เพื่อนร่วมงานเปิดลิงก์นี้จะเชื่อมต่อข้อมูลล่าสุดอัตโนมัติทันที',
+      });
+    } catch {
+      setFeedback({
+        type: 'error',
+        text: 'ไม่สามารถคัดลอกลิงก์ได้ กรุณาคัดลอก URL จากแถบเบราว์เซอร์แทน',
+      });
     }
   };
 
@@ -349,21 +376,46 @@ export const GoogleSheetsSyncModal: React.FC = () => {
 
             {/* Buttons */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-              <button
-                type="button"
-                onClick={handleManualSync}
-                disabled={isSyncingSheets}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-sm ${
-                  isSyncingSheets
-                    ? 'opacity-70 cursor-not-allowed bg-slate-700 text-white'
-                    : isLight
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
-                }`}
-              >
-                <RefreshCw className={`w-4 h-4 ${isSyncingSheets ? 'animate-spin' : ''}`} />
-                <span>{isSyncingSheets ? 'กำลังซิงค์ข้อมูล...' : '⚡ ซิงค์ทันทีเดี๋ยวนี้ (Sync Now)'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleManualSync}
+                  disabled={isSyncingSheets}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-sm ${
+                    isSyncingSheets
+                      ? 'opacity-70 cursor-not-allowed bg-slate-700 text-white'
+                      : isLight
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                      : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                  }`}
+                >
+                  <RefreshCw className={`w-4 h-4 ${isSyncingSheets ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingSheets ? 'กำลังซิงค์ข้อมูล...' : '⚡ ซิงค์ทันทีเดี๋ยวนี้ (Sync Now)'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyTeamLink}
+                  className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all ${
+                    isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300'
+                      : 'bg-white/5 hover:bg-white/10 text-slate-200 border-white/10'
+                  }`}
+                  title="คัดลอกลิงก์แชร์สำหรับเพื่อนร่วมงาน เครื่องอื่นเปิดลิงก์นี้จะเชื่อมโยงชีทและอัปเดต Realtime อัตโนมัติทันที"
+                >
+                  {hasCopiedLink ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                      <span className="text-emerald-600 dark:text-emerald-400 font-bold">คัดลอกลิงก์แล้ว!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Share2 className="w-3.5 h-3.5 text-cyan-500" />
+                      <span>แชร์ลิงก์ให้ทีม</span>
+                    </>
+                  )}
+                </button>
+              </div>
 
               <button
                 type="submit"
@@ -379,6 +431,38 @@ export const GoogleSheetsSyncModal: React.FC = () => {
               </button>
             </div>
           </form>
+
+          {/* Master-Client One-Device Sync Banner */}
+          <div
+            className={`p-4 rounded-2xl border space-y-2.5 ${
+              isLight ? 'bg-gradient-to-r from-emerald-50 to-teal-50 border-emerald-200' : 'bg-gradient-to-r from-emerald-950/20 to-teal-950/20 border-emerald-500/30'
+            }`}
+          >
+            <div className="flex items-center gap-2 font-bold text-emerald-600 dark:text-emerald-400 text-xs">
+              <Users className="w-4 h-4" />
+              <span>ซิงค์ Google Sheets เครื่องเดียว — ใช้งาน Realtime พร้อมกันได้ทั้งองค์กร:</span>
+            </div>
+            <div className={`space-y-1.5 text-[11px] leading-relaxed ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+              <div className="flex items-start gap-2">
+                <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">1</span>
+                <div>
+                  <strong>เครื่องหลัก (Master Sync):</strong> เมื่อตั้งค่าลิงก์ Google Sheets บนเครื่องนี้ ข้อมูลจะถูกจัดเก็บบนฐานข้อมูลกลางของเซิร์ฟเวอร์ทันที
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">2</span>
+                <div>
+                  <strong>เครื่องอื่นๆ ของทีม (Client Devices):</strong> ไม่ต้องกรอกลิงก์หรือกดซิงค์ซ้ำ เพียงเปิดหน้าเว็บระบบ ทันทีที่เครื่องหลักหรือ Google Sheets มีการอัปเดต ทุกเครื่องจะเห็นข้อมูลเปลี่ยนไปพร้อมกันแบบ Realtime ทันที
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">3</span>
+                <div>
+                  <strong>การแชร์ให้ผู้อื่น:</strong> ส่งลิงก์แชร์จากปุ่ม <em>"แชร์ลิงก์ให้ทีม"</em> ด้านบน หรือเปิดผ่านโดเมน/IP เดียวกันในวงแลนออฟฟิศ
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* Quick Guide Card */}
           <div
