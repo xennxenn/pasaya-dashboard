@@ -12,6 +12,36 @@ import {
   DEFAULT_GOOGLE_SHEETS_CONFIG,
   extractUniqueRepsFromRecords,
 } from './src/data/salesDataService.ts';
+import {
+  detectSheetType,
+  parseLeadReport,
+  parseForecastSalesReport,
+  parseDatabaseConfig,
+  parseQuotationReport,
+  parseMeasurementReport,
+  parseInstallmentReport,
+  parseClaimReport,
+  convertQuotationReportToSalesRecords,
+} from './src/data/multiSheetParser.ts';
+import {
+  INITIAL_LEAD_REPORT,
+  INITIAL_FORECAST_SALES,
+  INITIAL_DATABASE_CONFIG,
+  INITIAL_QUOTATION_REPORT,
+  INITIAL_MEASUREMENT_REPORT,
+  INITIAL_INSTALLMENT_REPORT,
+  INITIAL_CLAIM_REPORT_2026,
+} from './src/data/initialMultiSheetData.ts';
+import type {
+  SheetType,
+  LeadReportRow,
+  ForecastSalesReportRow,
+  DatabaseConfigRow,
+  QuotationReportRow,
+  MeasurementReportRow,
+  InstallmentReportRow,
+  ClaimReportRow,
+} from './src/types/sheetSchemas.ts';
 import { RAW_CSV_DATA } from './src/data/rawCsv.ts';
 import type {
   SalesRecord,
@@ -38,6 +68,13 @@ interface DatabaseSchema {
   settings: AppSettings;
   sheetsConfig: GoogleSheetsConfig;
   syncLogs: SyncLogEntry[];
+  leadRows?: LeadReportRow[];
+  forecastRows?: ForecastSalesReportRow[];
+  dbConfigRows?: DatabaseConfigRow[];
+  quotationRows?: QuotationReportRow[];
+  measurementRows?: MeasurementReportRow[];
+  installmentRows?: InstallmentReportRow[];
+  claimRows?: ClaimReportRow[];
 }
 
 // Ensure database directory exists
@@ -54,6 +91,13 @@ function getInitialDatabase(): DatabaseSchema {
     sidebarItems: INITIAL_SIDEBAR_ITEMS,
     settings: DEFAULT_APP_SETTINGS,
     sheetsConfig: DEFAULT_GOOGLE_SHEETS_CONFIG,
+    leadRows: INITIAL_LEAD_REPORT,
+    forecastRows: INITIAL_FORECAST_SALES,
+    dbConfigRows: INITIAL_DATABASE_CONFIG,
+    quotationRows: INITIAL_QUOTATION_REPORT,
+    measurementRows: INITIAL_MEASUREMENT_REPORT,
+    installmentRows: INITIAL_INSTALLMENT_REPORT,
+    claimRows: INITIAL_CLAIM_REPORT_2026,
     syncLogs: [
       {
         id: `log-${Date.now()}`,
@@ -76,10 +120,38 @@ try {
     if (!db.records) db.records = parseRawCsv(RAW_CSV_DATA);
     if (!db.salesReps) db.salesReps = INITIAL_SALES_REPS;
     if (!db.targets) db.targets = generateInitialTargets();
-    if (!db.sidebarItems) db.sidebarItems = INITIAL_SIDEBAR_ITEMS;
+
+    // Reconcile sidebar items so all initial items exist
+    const existingSidebarIds = new Set((db.sidebarItems || []).map((i) => i.id));
+    const missingInitials = INITIAL_SIDEBAR_ITEMS.filter((i) => !existingSidebarIds.has(i.id));
+    if (missingInitials.length > 0 || !db.sidebarItems || db.sidebarItems.length < INITIAL_SIDEBAR_ITEMS.length) {
+      const existingMap = new Map((db.sidebarItems || []).map((i) => [i.id, i]));
+      const reconciled = INITIAL_SIDEBAR_ITEMS.map((init) => {
+        const found = existingMap.get(init.id);
+        if (found) {
+          return { ...init, ...found, visible: found.visible ?? true };
+        }
+        return init;
+      });
+      for (const item of (db.sidebarItems || [])) {
+        if (!INITIAL_SIDEBAR_ITEMS.some((init) => init.id === item.id)) {
+          reconciled.push(item);
+        }
+      }
+      db.sidebarItems = reconciled.sort((a, b) => a.order - b.order);
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    }
+
     if (!db.settings) db.settings = DEFAULT_APP_SETTINGS;
     if (!db.sheetsConfig) db.sheetsConfig = DEFAULT_GOOGLE_SHEETS_CONFIG;
     if (!db.syncLogs) db.syncLogs = [];
+    if (!db.leadRows) db.leadRows = INITIAL_LEAD_REPORT;
+    if (!db.forecastRows) db.forecastRows = INITIAL_FORECAST_SALES;
+    if (!db.dbConfigRows) db.dbConfigRows = INITIAL_DATABASE_CONFIG;
+    if (!db.quotationRows) db.quotationRows = INITIAL_QUOTATION_REPORT;
+    if (!db.measurementRows) db.measurementRows = INITIAL_MEASUREMENT_REPORT;
+    if (!db.installmentRows) db.installmentRows = INITIAL_INSTALLMENT_REPORT;
+    if (!db.claimRows) db.claimRows = INITIAL_CLAIM_REPORT_2026;
   } else {
     db = getInitialDatabase();
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
@@ -119,34 +191,46 @@ function broadcast(eventType: string, payload: unknown) {
 
 // Helper: Convert Google Sheet URL/ID into downloadable CSV URLs with cache busting
 function extractGoogleSheetCsvUrls(rawInput: string, sheetName?: string): string[] {
-  const trimmed = rawInput.trim();
+  let trimmed = (rawInput || '').trim();
   if (!trimmed) return [];
+
+  // Remove wrapping quotes or angle brackets
+  trimmed = trimmed.replace(/^["'<]|["'>]$/g, '').trim();
 
   const urls: string[] = [];
   const timestamp = Date.now();
 
-  // Already a published csv url or gviz url
-  if (trimmed.includes('pub?output=csv') || trimmed.includes('gviz/tq?tqx=out:csv')) {
+  // 1. Google Sheets "Publish to the web" URLs (e.g. /spreadsheets/d/e/2PACX-.../pub...)
+  if (trimmed.includes('/pub') || trimmed.includes('/d/e/')) {
+    let pubUrl = trimmed;
+    // Replace /pubhtml with /pub
+    if (pubUrl.includes('/pubhtml')) {
+      pubUrl = pubUrl.replace(/\/pubhtml([?#].*)?$/, '/pub$1');
+    }
+    // Ensure output=csv parameter is present
+    if (!pubUrl.includes('output=csv')) {
+      const sep = pubUrl.includes('?') ? '&' : '?';
+      pubUrl = `${pubUrl}${sep}output=csv`;
+    }
+    const sep = pubUrl.includes('?') ? '&' : '?';
+    urls.push(`${pubUrl}${sep}_t=${timestamp}`);
+    urls.push(pubUrl);
+    return urls;
+  }
+
+  // 2. Already a direct CSV export or gviz link
+  if (trimmed.includes('export?format=csv') || trimmed.includes('gviz/tq?tqx=out:csv')) {
     const sep = trimmed.includes('?') ? '&' : '?';
     urls.push(`${trimmed}${sep}_t=${timestamp}`);
     urls.push(trimmed);
     return urls;
   }
 
-  // Handle published HTML link -> convert to output=csv
-  if (trimmed.includes('/pubhtml') || trimmed.includes('/pub?')) {
-    const converted = trimmed.replace(/\/pubhtml.*/, '/pub?output=csv').replace(/\/pub\?.*/, '/pub?output=csv');
-    urls.push(`${converted}&_t=${timestamp}`);
-    urls.push(converted);
-  }
-
-  // Extract Sheet ID
-  // e.g. https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit#gid=0
+  // 3. Standard Google Sheet URL: /spreadsheets/d/<SHEET_ID>/...
   const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  const sheetId = match ? match[1] : trimmed.startsWith('http') ? '' : trimmed;
+  const sheetId = match && match[1] !== 'e' ? match[1] : trimmed.startsWith('http') ? '' : trimmed;
 
-  if (sheetId) {
-    // Extract gid if present
+  if (sheetId && sheetId !== 'e') {
     const gidMatch = trimmed.match(/gid=([0-9]+)/);
     const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
     const sheetParam = sheetName ? `&sheet=${encodeURIComponent(sheetName)}` : '';
@@ -155,12 +239,15 @@ function extractGoogleSheetCsvUrls(rawInput: string, sheetName?: string): string
     urls.push(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv${gidParam}${sheetParam}&headers=1&_t=${timestamp}`);
     // Secondary: Direct export format=csv with cache buster
     urls.push(`https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}&_t=${timestamp}`);
-    // Tertiary: Fallback without params
-    urls.push(`https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`);
-    urls.push(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`);
+    // Tertiary: Fallback without cache buster
+    urls.push(`https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${gidParam}`);
+    urls.push(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv${gidParam}${sheetParam}`);
+    return urls;
   }
 
-  if (urls.length === 0 && trimmed.startsWith('http')) {
+  if (trimmed.startsWith('http')) {
+    const sep = trimmed.includes('?') ? '&' : '?';
+    urls.push(`${trimmed}${sep}_t=${timestamp}`);
     urls.push(trimmed);
   }
 
@@ -174,9 +261,16 @@ async function syncGoogleSheets(): Promise<{ success: boolean; message: string; 
     return { success: false, message: 'ยังไม่ได้ระบุลิงก์หรือไอดี Google Sheet' };
   }
 
-  const candidateUrls = extractGoogleSheetCsvUrls(sheetUrl, sheetName);
+  const trimmed = sheetUrl.trim();
+
+  // If user pasted raw CSV content directly into the sheetUrl field
+  if (!trimmed.startsWith('http') && (trimmed.includes('\n') || (trimmed.includes(',') && trimmed.length > 50))) {
+    return applyCsvDataToDatabase(trimmed, sheetName, 'manual_csv');
+  }
+
+  const candidateUrls = extractGoogleSheetCsvUrls(trimmed, sheetName);
   if (candidateUrls.length === 0) {
-    return { success: false, message: 'รูปแบบลิงก์ Google Sheets ไม่ถูกต้อง' };
+    return { success: false, message: 'รูปแบบลิงก์ Google Sheets ไม่ถูกต้อง กรุณาวางลิงก์ Google Sheets หรือ Published CSV' };
   }
 
   db.sheetsConfig.lastSyncStatus = 'syncing';
@@ -216,7 +310,7 @@ async function syncGoogleSheets(): Promise<{ success: boolean; message: string; 
   }
 
   if (!fetchedCsv) {
-    const errorMsg = lastError || 'ไม่สามารถดึงข้อมูลจาก Google Sheets ได้ กรุณาตรวจสอบการแชร์ไฟล์';
+    const errorMsg = lastError || 'ไม่สามารถดึงข้อมูลจาก Google Sheets ได้ กรุณาตรวจสอบการแชร์ไฟล์ หรือลิงก์ Published CSV';
     db.sheetsConfig.lastSyncStatus = 'error';
     db.sheetsConfig.lastSyncMessage = errorMsg;
     db.sheetsConfig.lastSyncTime = new Date().toISOString();
@@ -238,31 +332,108 @@ async function syncGoogleSheets(): Promise<{ success: boolean; message: string; 
     return { success: false, message: errorMsg };
   }
 
-  // Parse CSV records
+  return applyCsvDataToDatabase(fetchedCsv, db.sheetsConfig.sheetName, 'google_sheets');
+}
+
+function applyCsvDataToDatabase(
+  csvContent: string,
+  targetSheetName?: string,
+  syncType: 'google_sheets' | 'manual_csv' | 'reset' = 'google_sheets'
+): { success: boolean; message: string; rowCount?: number } {
+  // Parse CSV records according to detected sheet type or tab
   try {
-    const newRecords = parseRawCsv(fetchedCsv);
-    if (newRecords.length === 0) {
-      throw new Error('ไม่พบแถวข้อมูลยอดขายที่ถูกต้องในไฟล์ Google Sheet (โปรดตรวจสอบหัวตารางและข้อมูล)');
+    const sheetType = detectSheetType(csvContent, targetSheetName);
+    let rowCount = 0;
+    let sheetLabel = '';
+
+    switch (sheetType) {
+      case 'lead_report': {
+        const rows = parseLeadReport(csvContent);
+        if (rows.length === 0) throw new Error('ไม่พบแถวข้อมูล Lead Report ที่ถูกต้องใน Google Sheet หรือข้อความ CSV');
+        db.leadRows = rows;
+        rowCount = rows.length;
+        sheetLabel = 'Lead Report (ลีดลูกค้า)';
+        break;
+      }
+      case 'forecast_sales': {
+        const rows = parseForecastSalesReport(csvContent);
+        if (rows.length === 0) throw new Error('ไม่พบแถวข้อมูล Forecast Sales Report ที่ถูกต้องใน Google Sheet หรือข้อความ CSV');
+        db.forecastRows = rows;
+        rowCount = rows.length;
+        sheetLabel = 'Forecast Sales Report';
+        break;
+      }
+      case 'database': {
+        const rows = parseDatabaseConfig(csvContent);
+        if (rows.length === 0) throw new Error('ไม่พบแถวข้อมูล Database Config ที่ถูกต้องใน Google Sheet หรือข้อความ CSV');
+        db.dbConfigRows = rows;
+        rowCount = rows.length;
+        sheetLabel = 'Database Config';
+        break;
+      }
+      case 'quotation_report': {
+        const rows = parseQuotationReport(csvContent);
+        if (rows.length === 0) throw new Error('ไม่พบแถวข้อมูล Quotation Report ที่ถูกต้องใน Google Sheet หรือข้อความ CSV');
+        db.quotationRows = rows;
+        rowCount = rows.length;
+        sheetLabel = 'Quotation Report';
+        const conv = convertQuotationReportToSalesRecords(rows, db.salesReps);
+        if (conv.length > 0) {
+          db.records = [...conv, ...db.records.filter((r) => !r.id.startsWith('quote-rec-'))];
+        }
+        break;
+      }
+      case 'measurement_report': {
+        const rows = parseMeasurementReport(csvContent);
+        if (rows.length === 0) throw new Error('ไม่พบแถวข้อมูล Measurement Report ที่ถูกต้องใน Google Sheet หรือข้อความ CSV');
+        db.measurementRows = rows;
+        rowCount = rows.length;
+        sheetLabel = 'Measurement Report';
+        break;
+      }
+      case 'installment_report': {
+        const rows = parseInstallmentReport(csvContent);
+        if (rows.length === 0) throw new Error('ไม่พบแถวข้อมูล Installment Report ที่ถูกต้องใน Google Sheet หรือข้อความ CSV');
+        db.installmentRows = rows;
+        rowCount = rows.length;
+        sheetLabel = 'Installment Report';
+        break;
+      }
+      case 'claim_report': {
+        const rows = parseClaimReport(csvContent);
+        if (rows.length === 0) throw new Error('ไม่พบแถวข้อมูล Claim Report ที่ถูกต้องใน Google Sheet หรือข้อความ CSV');
+        db.claimRows = rows;
+        rowCount = rows.length;
+        sheetLabel = 'Claim Report';
+        break;
+      }
+      case 'sales_summary':
+      default: {
+        const newRecords = parseRawCsv(csvContent);
+        if (newRecords.length === 0) {
+          throw new Error('ไม่พบแถวข้อมูลยอดขายที่ถูกต้องในไฟล์ Google Sheet (โปรดตรวจสอบหัวตารางและข้อมูล)');
+        }
+        db.records = newRecords;
+        db.salesReps = extractUniqueRepsFromRecords(newRecords, db.salesReps);
+        rowCount = newRecords.length;
+        sheetLabel = 'Sales Summary Report';
+        break;
+      }
     }
 
-    db.records = newRecords;
-    
-    // Automatically reconcile sales reps from records so no employee ever gets lost
-    db.salesReps = extractUniqueRepsFromRecords(newRecords, db.salesReps);
-
     db.sheetsConfig.lastSyncStatus = 'success';
-    db.sheetsConfig.lastSyncMessage = `ซิงค์ข้อมูลล่าสุดสำเร็จพบ ${newRecords.length} แถว (พนักงาน ${db.salesReps.length} คน)`;
+    db.sheetsConfig.lastSyncMessage = `ซิงค์ข้อมูลล่าสุดสำเร็จ (${sheetLabel}) พบ ${rowCount} แถว`;
     db.sheetsConfig.lastSyncTime = new Date().toISOString();
     db.sheetsConfig.syncCount = (db.sheetsConfig.syncCount || 0) + 1;
-    db.sheetsConfig.syncedRowCount = newRecords.length;
+    db.sheetsConfig.syncedRowCount = rowCount;
 
     db.syncLogs.unshift({
       id: `log-${Date.now()}`,
       timestamp: new Date().toISOString(),
-      type: 'google_sheets',
+      type: syncType,
       status: 'success',
-      message: `ซิงค์เรียลไทม์สำเร็จ (${newRecords.length} แถว, พนักงาน ${db.salesReps.length} คน)`,
-      rowCount: newRecords.length,
+      message: `ซิงค์เรียลไทม์สำเร็จ (${sheetLabel}, ${rowCount} แถว)`,
+      rowCount,
     });
     if (db.syncLogs.length > 50) db.syncLogs.pop();
 
@@ -274,11 +445,18 @@ async function syncGoogleSheets(): Promise<{ success: boolean; message: string; 
       salesReps: db.salesReps,
       sheetsConfig: db.sheetsConfig,
       syncLogs: db.syncLogs,
+      leadRows: db.leadRows,
+      forecastRows: db.forecastRows,
+      dbConfigRows: db.dbConfigRows,
+      quotationRows: db.quotationRows,
+      measurementRows: db.measurementRows,
+      installmentRows: db.installmentRows,
+      claimRows: db.claimRows,
     });
 
-    return { success: true, message: `ซิงค์ข้อมูลล่าสุดสำเร็จ (${newRecords.length} แถว)`, rowCount: newRecords.length };
+    return { success: true, message: `ซิงค์ข้อมูลล่าสุดสำเร็จ (${sheetLabel}, ${rowCount} แถว)`, rowCount };
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการแปลงข้อมูล CSV จาก Google Sheets';
+    const errorMsg = err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการแปลงข้อมูล CSV';
     db.sheetsConfig.lastSyncStatus = 'error';
     db.sheetsConfig.lastSyncMessage = errorMsg;
     db.sheetsConfig.lastSyncTime = new Date().toISOString();
@@ -286,7 +464,7 @@ async function syncGoogleSheets(): Promise<{ success: boolean; message: string; 
     db.syncLogs.unshift({
       id: `log-${Date.now()}`,
       timestamp: new Date().toISOString(),
-      type: 'google_sheets',
+      type: syncType,
       status: 'error',
       message: errorMsg,
     });
@@ -452,6 +630,14 @@ async function startServer() {
     } else {
       res.status(400).json({ error: 'Invalid sidebarItems' });
     }
+  });
+
+  // REST API: Reset Sidebar Items to default 16 pages
+  app.post('/api/sidebar/reset', (_req, res) => {
+    db.sidebarItems = INITIAL_SIDEBAR_ITEMS;
+    saveDatabase();
+    broadcast('data_update', { sidebarItems: db.sidebarItems });
+    res.json({ success: true, count: db.sidebarItems.length, sidebarItems: db.sidebarItems });
   });
 
   // REST API: Update Settings

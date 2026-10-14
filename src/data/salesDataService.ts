@@ -517,60 +517,116 @@ export function generateInitialTargets(): MonthlyTarget[] {
 // Initial Sidebar Menu Items
 export const INITIAL_SIDEBAR_ITEMS: SidebarMenuItem[] = [
   {
-    id: 'overview',
-    label: 'Overview ภาพรวมยอดขาย',
+    id: 'dashboard',
+    label: 'Dashboard ภาพรวม & Lead',
     icon: 'LayoutDashboard',
     visible: true,
     order: 1,
   },
   {
-    id: 'analytics',
-    label: 'กราฟวิเคราะห์ & สัดส่วนสินค้า',
-    icon: 'TrendingUp',
+    id: 'lead-followup',
+    label: 'Lead & Follow-up Report',
+    icon: 'Users',
     visible: true,
     order: 2,
   },
   {
-    id: 'sales-reps',
-    label: 'อันดับ & ผลงานทีมขาย',
-    icon: 'Award',
+    id: 'sales-performance',
+    label: 'Sales Performance',
+    icon: 'TrendingUp',
     visible: true,
     order: 3,
   },
   {
-    id: 'team-targets',
-    label: 'จัดการเป้าหมายยอดขาย (KPI)',
-    icon: 'Target',
+    id: 'measurement-report',
+    label: 'Measurement Scheduling',
+    icon: 'Calendar',
     visible: true,
     order: 4,
   },
   {
-    id: 'manage-reps',
-    label: 'จัดการข้อมูลพนักงานขาย',
-    icon: 'Users',
+    id: 'target-achievement',
+    label: 'Target vs Achievement',
+    icon: 'Target',
     visible: true,
     order: 5,
+  },
+  {
+    id: 'conversion-rate',
+    label: 'Conversion Rate',
+    icon: 'Percent',
+    visible: true,
+    order: 6,
+  },
+  {
+    id: 'claim-report',
+    label: 'Claim Issue Report',
+    icon: 'AlertTriangle',
+    visible: true,
+    order: 7,
+  },
+  {
+    id: 'progress-of-sales',
+    label: 'Progress of Sales',
+    icon: 'Award',
+    visible: true,
+    order: 8,
+  },
+  {
+    id: 'data-sheet',
+    label: 'ชีทข้อมูล 7 รายงาน (Data)',
+    icon: 'FileSpreadsheet',
+    visible: true,
+    order: 9,
+  },
+  {
+    id: 'sales-reps',
+    label: 'อันดับผลงานทีมขาย',
+    icon: 'Award',
+    visible: true,
+    order: 10,
+  },
+  {
+    id: 'overview',
+    label: 'Overview ตารางสรุปเดิม',
+    icon: 'FileText',
+    visible: true,
+    order: 11,
+  },
+  {
+    id: 'analytics',
+    label: 'กราฟวิเคราะห์สินค้า',
+    icon: 'TrendingUp',
+    visible: true,
+    order: 12,
+  },
+  {
+    id: 'team-targets',
+    label: 'จัดการเป้าหมาย (KPI)',
+    icon: 'Target',
+    visible: true,
+    order: 13,
+  },
+  {
+    id: 'manage-reps',
+    label: 'จัดการพนักงานขาย',
+    icon: 'Users',
+    visible: true,
+    order: 14,
   },
   {
     id: 'manage-sidebar',
     label: 'จัดการหน้าเมนู Sidebar',
     icon: 'Menu',
     visible: true,
-    order: 6,
-  },
-  {
-    id: 'data-sheet',
-    label: 'ชีทข้อมูล Sales Report',
-    icon: 'FileSpreadsheet',
-    visible: true,
-    order: 7,
+    order: 15,
   },
   {
     id: 'settings',
     label: 'ตั้งค่า & ปรับสี Font',
     icon: 'Settings',
     visible: true,
-    order: 8,
+    order: 16,
   },
 ];
 
@@ -601,4 +657,9 @@ export const DEFAULT_GOOGLE_SHEETS_CONFIG: GoogleSheetsConfig = {
   syncCount: 0,
   syncedRowCount: 0,
 };
+
+// Re-export 7 Google Sheets schema types and parsers
+export * from '../types/sheetSchemas';
+export * from './multiSheetParser';
+
 

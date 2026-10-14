@@ -21,6 +21,37 @@ import {
   MONTH_NAMES,
   extractUniqueRepsFromRecords,
 } from '../data/salesDataService';
+import {
+  SheetType,
+  LeadReportRow,
+  ForecastSalesReportRow,
+  DatabaseConfigRow,
+  QuotationReportRow,
+  MeasurementReportRow,
+  InstallmentReportRow,
+  ClaimReportRow,
+} from '../types/sheetSchemas';
+import {
+  detectSheetType,
+  parseLeadReport,
+  parseForecastSalesReport,
+  parseDatabaseConfig,
+  parseQuotationReport,
+  parseMeasurementReport,
+  parseInstallmentReport,
+  parseClaimReport,
+  convertQuotationReportToSalesRecords,
+} from '../data/multiSheetParser';
+import {
+  INITIAL_LEAD_REPORT,
+  INITIAL_FORECAST_SALES,
+  INITIAL_DATABASE_CONFIG,
+  INITIAL_QUOTATION_REPORT,
+  INITIAL_MEASUREMENT_REPORT,
+  INITIAL_INSTALLMENT_REPORT,
+  INITIAL_CLAIM_REPORT_2026,
+} from '../data/initialMultiSheetData';
+
 
 interface MonthDetailPopup {
   year: number;
@@ -105,22 +136,73 @@ interface SalesContextType {
   toggleSidebarItemVisibility: (id: string) => void;
   reorderSidebarItems: (sourceIndex: number, destinationIndex: number) => void;
   deleteSidebarItem: (id: string) => void;
+  resetSidebarItems: () => void;
   // CSV & Sheets Data actions
   importCsv: (csvContent: string) => boolean;
+  importSheetCsv: (csvContent: string, specifiedType?: SheetType) => { success: boolean; sheetType: SheetType; rowCount: number; message: string };
   triggerGoogleSheetsSync: () => Promise<{ success: boolean; message: string; rowCount?: number }>;
   updateGoogleSheetsConfig: (newConfig: Partial<GoogleSheetsConfig>) => Promise<void>;
   resetAllData: () => void;
+  // 7 Sheets Data State & Tab
+  leadRows: LeadReportRow[];
+  forecastRows: ForecastSalesReportRow[];
+  dbConfigRows: DatabaseConfigRow[];
+  quotationRows: QuotationReportRow[];
+  measurementRows: MeasurementReportRow[];
+  installmentRows: InstallmentReportRow[];
+  claimRows: ClaimReportRow[];
+  activeSheetTab: SheetType;
+  setActiveSheetTab: (type: SheetType) => void;
+  toggleClaimVisibility: (id: string) => void;
 }
 
 const SalesContext = createContext<SalesContextType | null>(null);
 
 const STORAGE_KEYS = {
-  RECORDS: 'pasaya_sales_records_v1',
-  REPS: 'pasaya_sales_reps_v1',
-  TARGETS: 'pasaya_sales_targets_v1',
-  SIDEBAR: 'pasaya_sidebar_items_v1',
-  SETTINGS: 'pasaya_app_settings_v1',
-  SHEETS: 'pasaya_sheets_config_v1',
+  RECORDS: 'pasaya_sales_records_v4',
+  REPS: 'pasaya_sales_reps_v4',
+  TARGETS: 'pasaya_sales_targets_v4',
+  SIDEBAR: 'pasaya_sidebar_items_v4',
+  SETTINGS: 'pasaya_app_settings_v4',
+  SHEETS: 'pasaya_sheets_config_v4',
+  LEAD_REPORT: 'pasaya_sheet_lead_report_v4',
+  FORECAST_SALES: 'pasaya_sheet_forecast_sales_v4',
+  DB_CONFIG: 'pasaya_sheet_db_config_v4',
+  QUOTATION_REPORT: 'pasaya_sheet_quotation_report_v4',
+  MEASUREMENT_REPORT: 'pasaya_sheet_measurement_report_v4',
+  INSTALLMENT_REPORT: 'pasaya_sheet_installment_report_v4',
+  CLAIM_REPORT: 'pasaya_sheet_claim_report_v4',
+  ACTIVE_SHEET_TAB: 'pasaya_active_sheet_tab_v4',
+};
+
+const reconcileSidebarList = (incoming: SidebarMenuItem[]): SidebarMenuItem[] => {
+  if (!Array.isArray(incoming) || incoming.length === 0) {
+    return INITIAL_SIDEBAR_ITEMS;
+  }
+  const incomingMap = new Map(incoming.map((i) => [i.id, i]));
+  const result: SidebarMenuItem[] = [];
+
+  for (const init of INITIAL_SIDEBAR_ITEMS) {
+    const existing = incomingMap.get(init.id);
+    if (existing) {
+      result.push({
+        ...init,
+        label: existing.label || init.label,
+        icon: existing.icon || init.icon,
+        visible: existing.visible ?? true,
+        order: existing.order ?? init.order,
+      });
+      incomingMap.delete(init.id);
+    } else {
+      result.push(init);
+    }
+  }
+
+  for (const extra of incomingMap.values()) {
+    result.push(extra);
+  }
+
+  return result.sort((a, b) => a.order - b.order);
 };
 
 export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -141,7 +223,6 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // Check if cache contains stale default mock data (e.g. PSY- codes, Siam Paragon, or unsplash avatars)
           const isStaleMock = parsed.some(
             (r: SalesRep) =>
               r.code?.startsWith('PSY-') ||
@@ -172,7 +253,10 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [sidebarItems, setSidebarItems] = useState<SidebarMenuItem[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.SIDEBAR);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed: SidebarMenuItem[] = JSON.parse(saved);
+        return reconcileSidebarList(parsed);
+      }
     } catch (e) {
       console.warn('Error reading sidebar cache', e);
     }
@@ -204,10 +288,101 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [isSyncingSheets, setIsSyncingSheets] = useState<boolean>(false);
   const [isSyncModalOpen, setIsSyncModalOpen] = useState<boolean>(false);
 
-  const [activePage, setActivePage] = useState<string>('overview');
+  const [activePage, setActivePage] = useState<string>('dashboard');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
   const [selectedMonthDetail, setSelectedMonthDetail] = useState<MonthDetailPopup | null>(null);
+
+  // 7 Sheets Data States & Tab
+  const [activeSheetTab, setActiveSheetTab] = useState<SheetType>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_SHEET_TAB);
+      if (saved) return saved as SheetType;
+    } catch {}
+    return 'sales_summary';
+  });
+
+  const [leadRows, setLeadRows] = useState<LeadReportRow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.LEAD_REPORT);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_LEAD_REPORT;
+  });
+
+  const [forecastRows, setForecastRows] = useState<ForecastSalesReportRow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.FORECAST_SALES);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_FORECAST_SALES;
+  });
+
+  const [dbConfigRows, setDbConfigRows] = useState<DatabaseConfigRow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.DB_CONFIG);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_DATABASE_CONFIG;
+  });
+
+  const [quotationRows, setQuotationRows] = useState<QuotationReportRow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.QUOTATION_REPORT);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_QUOTATION_REPORT;
+  });
+
+  const [measurementRows, setMeasurementRows] = useState<MeasurementReportRow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.MEASUREMENT_REPORT);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_MEASUREMENT_REPORT;
+  });
+
+  const [installmentRows, setInstallmentRows] = useState<InstallmentReportRow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.INSTALLMENT_REPORT);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_INSTALLMENT_REPORT;
+  });
+
+  const [claimRows, setClaimRows] = useState<ClaimReportRow[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.CLAIM_REPORT);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_CLAIM_REPORT_2026;
+  });
+
+  // Local storage persistence effects for 7 sheets
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.ACTIVE_SHEET_TAB, activeSheetTab); } catch {}
+  }, [activeSheetTab]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.LEAD_REPORT, JSON.stringify(leadRows)); } catch {}
+  }, [leadRows]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.FORECAST_SALES, JSON.stringify(forecastRows)); } catch {}
+  }, [forecastRows]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.DB_CONFIG, JSON.stringify(dbConfigRows)); } catch {}
+  }, [dbConfigRows]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.QUOTATION_REPORT, JSON.stringify(quotationRows)); } catch {}
+  }, [quotationRows]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.MEASUREMENT_REPORT, JSON.stringify(measurementRows)); } catch {}
+  }, [measurementRows]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.INSTALLMENT_REPORT, JSON.stringify(installmentRows)); } catch {}
+  }, [installmentRows]);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.CLAIM_REPORT, JSON.stringify(claimRows)); } catch {}
+  }, [claimRows]);
 
   // Sync to local storage for instant offline access
   useEffect(() => {
@@ -304,7 +479,7 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           });
         }
         if (data.targets) setTargets(data.targets);
-        if (data.sidebarItems) setSidebarItems(data.sidebarItems);
+        if (data.sidebarItems) setSidebarItems(reconcileSidebarList(data.sidebarItems));
         if (data.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
         if (data.sheetsConfig) setSheetsConfig(data.sheetsConfig);
         if (data.syncLogs) setSyncLogs(data.syncLogs);
@@ -361,7 +536,7 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             if (data.records) setRecords(data.records);
             if (data.salesReps) setSalesReps(data.salesReps);
             if (data.targets) setTargets(data.targets);
-            if (data.sidebarItems) setSidebarItems(data.sidebarItems);
+            if (data.sidebarItems) setSidebarItems(reconcileSidebarList(data.sidebarItems));
             if (data.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
             if (data.sheetsConfig) setSheetsConfig(data.sheetsConfig);
             if (data.syncLogs) setSyncLogs(data.syncLogs);
@@ -377,7 +552,7 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             if (data.records) setRecords(data.records);
             if (data.salesReps) setSalesReps(data.salesReps);
             if (data.targets) setTargets(data.targets);
-            if (data.sidebarItems) setSidebarItems(data.sidebarItems);
+            if (data.sidebarItems) setSidebarItems(reconcileSidebarList(data.sidebarItems));
             if (data.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
             if (data.sheetsConfig) setSheetsConfig(data.sheetsConfig);
             if (data.syncLogs) setSyncLogs(data.syncLogs);
@@ -884,21 +1059,115 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }).catch((e) => console.warn('Failed to sync sidebar with server:', e));
   };
 
-  const importCsv = (csvContent: string): boolean => {
+  const resetSidebarItems = useCallback(async () => {
+    setSidebarItems(INITIAL_SIDEBAR_ITEMS);
     try {
-      const parsed = parseRawCsv(csvContent);
-      if (parsed.length === 0) return false;
-      setRecords(parsed);
-      fetch('/api/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ records: parsed }),
-      }).catch((e) => console.warn('Failed to sync imported records with server:', e));
-      return true;
+      localStorage.setItem(STORAGE_KEYS.SIDEBAR, JSON.stringify(INITIAL_SIDEBAR_ITEMS));
+      await fetch('/api/sidebar/reset', { method: 'POST' });
     } catch (e) {
-      console.error('Failed to parse CSV', e);
-      return false;
+      console.warn('Failed to reset sidebar with server:', e);
     }
+  }, []);
+
+  const importSheetCsv = (
+    csvContent: string,
+    specifiedType?: SheetType
+  ): { success: boolean; sheetType: SheetType; rowCount: number; message: string } => {
+    try {
+      const type = specifiedType || detectSheetType(csvContent, sheetsConfig.sheetName);
+      let count = 0;
+      let label = '';
+
+      switch (type) {
+        case 'lead_report': {
+          const rows = parseLeadReport(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: type, rowCount: 0, message: 'ไม่พบแถวข้อมูล Lead Report ที่ถูกต้อง' };
+          setLeadRows(rows);
+          count = rows.length;
+          label = 'Lead Report (ลีดลูกค้า)';
+          break;
+        }
+        case 'forecast_sales': {
+          const rows = parseForecastSalesReport(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: type, rowCount: 0, message: 'ไม่พบแถวข้อมูล Forecast Sales ที่ถูกต้อง' };
+          setForecastRows(rows);
+          count = rows.length;
+          label = 'Forecast Sales Report (พยากรณ์ยอดขาย)';
+          break;
+        }
+        case 'database': {
+          const rows = parseDatabaseConfig(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: type, rowCount: 0, message: 'ไม่พบแถวข้อมูล Database Config ที่ถูกต้อง' };
+          setDbConfigRows(rows);
+          count = rows.length;
+          label = 'Database (เป้าหมาย & Conversion)';
+          break;
+        }
+        case 'quotation_report': {
+          const rows = parseQuotationReport(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: type, rowCount: 0, message: 'ไม่พบแถวข้อมูล Quotation Report ที่ถูกต้อง' };
+          setQuotationRows(rows);
+          count = rows.length;
+          label = 'Quotation Report (ใบเสนอราคา)';
+          const conv = convertQuotationReportToSalesRecords(rows, salesReps);
+          if (conv.length > 0) {
+            setRecords((prev) => [...conv, ...prev.filter((r) => !r.id.startsWith('quote-rec-'))]);
+          }
+          break;
+        }
+        case 'measurement_report': {
+          const rows = parseMeasurementReport(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: type, rowCount: 0, message: 'ไม่พบแถวข้อมูล Measurement Report ที่ถูกต้อง' };
+          setMeasurementRows(rows);
+          count = rows.length;
+          label = 'Measurement Report (วัดพื้นที่)';
+          break;
+        }
+        case 'installment_report': {
+          const rows = parseInstallmentReport(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: type, rowCount: 0, message: 'ไม่พบแถวข้อมูล Installment Report ที่ถูกต้อง' };
+          setInstallmentRows(rows);
+          count = rows.length;
+          label = 'Installment Report (คิวติดตั้ง)';
+          break;
+        }
+        case 'claim_report': {
+          const rows = parseClaimReport(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: type, rowCount: 0, message: 'ไม่พบแถวข้อมูล Claim Report ที่ถูกต้อง' };
+          setClaimRows(rows);
+          count = rows.length;
+          label = 'Claim Report (เคลมและแก้งาน)';
+          break;
+        }
+        case 'sales_summary':
+        default: {
+          const rows = parseRawCsv(csvContent);
+          if (rows.length === 0) return { success: false, sheetType: 'sales_summary', rowCount: 0, message: 'ไม่พบแถวข้อมูล Sales Summary ที่ถูกต้อง' };
+          setRecords(rows);
+          setSalesReps((prev) => extractUniqueRepsFromRecords(rows, prev));
+          count = rows.length;
+          label = 'Sales Summary (สรุปยอดขาย)';
+          fetch('/api/records', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ records: rows }),
+          }).catch(() => {});
+          break;
+        }
+      }
+
+      setActiveSheetTab(type);
+      const msg = `นำเข้า ${label} สำเร็จเรียบร้อย (${count} แถว)`;
+      return { success: true, sheetType: type, rowCount: count, message: msg };
+    } catch (e) {
+      console.error('importSheetCsv error:', e);
+      return { success: false, sheetType: 'sales_summary', rowCount: 0, message: 'เกิดข้อผิดพลาดในการประมวลผลไฟล์ CSV' };
+    }
+  };
+
+  const importCsv = (csvContent: string): boolean => {
+    const res = importSheetCsv(csvContent);
+    return res.success;
   };
 
   // Trigger manual or immediate Google Sheets Sync with intelligent dual-engine (server + client fallback)
@@ -919,9 +1188,17 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Server not available (e.g. running on Vercel static deployment) -> seamlessly proceed to client engine
       }
 
-      // 2. Second attempt / Vercel engine: Direct browser-to-Google Sheets fetch
+      // 2. Second attempt / Client engine: Direct browser-to-Google Sheets fetch
       if (sheetsConfig.sheetUrl?.trim()) {
-        const rawUrl = sheetsConfig.sheetUrl.trim();
+        let rawUrl = sheetsConfig.sheetUrl.trim().replace(/^["'<]|["'>]$/g, '').trim();
+
+        // If user pasted raw CSV content directly into the sheetUrl field
+        if (!rawUrl.startsWith('http') && (rawUrl.includes('\n') || (rawUrl.includes(',') && rawUrl.length > 50))) {
+          const res = importSheetCsv(rawUrl, sheetsConfig.sheetName as SheetType | undefined);
+          setIsSyncingSheets(false);
+          return { success: res.success, message: res.message, rowCount: res.rowCount };
+        }
+
         const idMatch = rawUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
         const gidMatch = rawUrl.match(/gid=([0-9]+)/);
         const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
@@ -930,23 +1207,29 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
         const testUrls: string[] = [];
 
-        // Handle published CSV or gviz link directly
-        if (rawUrl.includes('pub?output=csv') || rawUrl.includes('gviz/tq?tqx=out:csv')) {
+        // 1. Google Sheets "Publish to the web" URLs (e.g. /spreadsheets/d/e/2PACX-.../pub...)
+        if (rawUrl.includes('/pub') || rawUrl.includes('/d/e/')) {
+          let pubUrl = rawUrl;
+          if (pubUrl.includes('/pubhtml')) {
+            pubUrl = pubUrl.replace(/\/pubhtml([?#].*)?$/, '/pub$1');
+          }
+          if (!pubUrl.includes('output=csv')) {
+            const sep = pubUrl.includes('?') ? '&' : '?';
+            pubUrl = `${pubUrl}${sep}output=csv`;
+          }
+          const sep = pubUrl.includes('?') ? '&' : '?';
+          testUrls.push(`${pubUrl}${sep}_t=${timestamp}`);
+          testUrls.push(pubUrl);
+        } else if (rawUrl.includes('export?format=csv') || rawUrl.includes('gviz/tq?tqx=out:csv')) {
           const sep = rawUrl.includes('?') ? '&' : '?';
           testUrls.push(`${rawUrl}${sep}_t=${timestamp}`);
           testUrls.push(rawUrl);
-        } else if (rawUrl.includes('/pubhtml') || rawUrl.includes('/pub?')) {
-          const converted = rawUrl.replace(/\/pubhtml.*/, '/pub?output=csv').replace(/\/pub\?.*/, '/pub?output=csv');
-          testUrls.push(`${converted}&_t=${timestamp}`);
-          testUrls.push(converted);
-        }
-
-        if (idMatch) {
+        } else if (idMatch && idMatch[1] !== 'e') {
           // Google Visualization API CSV Export with cache buster (most reliable)
           testUrls.push(`https://docs.google.com/spreadsheets/d/${idMatch[1]}/gviz/tq?tqx=out:csv${gidParam}${sheetParam}&headers=1&_t=${timestamp}`);
           // Direct export format=csv
           testUrls.push(`https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv${gidParam}&_t=${timestamp}`);
-          testUrls.push(`https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv`);
+          testUrls.push(`https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=csv${gidParam}`);
         } else if (rawUrl.startsWith('http')) {
           testUrls.push(rawUrl);
         }
@@ -981,18 +1264,111 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
 
         if (fetchedText) {
-          const parsed = parseRawCsv(fetchedText);
-          if (parsed.length > 0) {
-            setRecords(parsed);
-            setSalesReps((prev) => extractUniqueRepsFromRecords(parsed, prev));
+          const sheetType = detectSheetType(fetchedText, sheetsConfig.sheetName);
+          let rowCount = 0;
+          let sheetLabel = '';
 
-            const successMsg = `ซิงค์เรียลไทม์สำเร็จพบ ${parsed.length} แถว`;
+          switch (sheetType) {
+            case 'lead_report': {
+              const rows = parseLeadReport(fetchedText);
+              if (rows.length > 0) {
+                setLeadRows(rows);
+                rowCount = rows.length;
+                sheetLabel = 'Lead Report';
+                setActiveSheetTab('lead_report');
+              }
+              break;
+            }
+            case 'forecast_sales': {
+              const rows = parseForecastSalesReport(fetchedText);
+              if (rows.length > 0) {
+                setForecastRows(rows);
+                rowCount = rows.length;
+                sheetLabel = 'Forecast Sales Report';
+                setActiveSheetTab('forecast_sales');
+              }
+              break;
+            }
+            case 'database': {
+              const rows = parseDatabaseConfig(fetchedText);
+              if (rows.length > 0) {
+                setDbConfigRows(rows);
+                rowCount = rows.length;
+                sheetLabel = 'Database Config';
+                setActiveSheetTab('database');
+              }
+              break;
+            }
+            case 'quotation_report': {
+              const rows = parseQuotationReport(fetchedText);
+              if (rows.length > 0) {
+                setQuotationRows(rows);
+                rowCount = rows.length;
+                sheetLabel = 'Quotation Report';
+                setActiveSheetTab('quotation_report');
+                const conv = convertQuotationReportToSalesRecords(rows, salesReps);
+                if (conv.length > 0) {
+                  setRecords((prev) => [...conv, ...prev.filter((r) => !r.id.startsWith('quote-rec-'))]);
+                }
+              }
+              break;
+            }
+            case 'measurement_report': {
+              const rows = parseMeasurementReport(fetchedText);
+              if (rows.length > 0) {
+                setMeasurementRows(rows);
+                rowCount = rows.length;
+                sheetLabel = 'Measurement Report';
+                setActiveSheetTab('measurement_report');
+              }
+              break;
+            }
+            case 'installment_report': {
+              const rows = parseInstallmentReport(fetchedText);
+              if (rows.length > 0) {
+                setInstallmentRows(rows);
+                rowCount = rows.length;
+                sheetLabel = 'Installment Report';
+                setActiveSheetTab('installment_report');
+              }
+              break;
+            }
+            case 'claim_report': {
+              const rows = parseClaimReport(fetchedText);
+              if (rows.length > 0) {
+                setClaimRows(rows);
+                rowCount = rows.length;
+                sheetLabel = 'Claim Report';
+                setActiveSheetTab('claim_report');
+              }
+              break;
+            }
+            case 'sales_summary':
+            default: {
+              const parsed = parseRawCsv(fetchedText);
+              if (parsed.length > 0) {
+                setRecords(parsed);
+                setSalesReps((prev) => extractUniqueRepsFromRecords(parsed, prev));
+                rowCount = parsed.length;
+                sheetLabel = 'Sales Summary Report';
+                fetch('/api/records', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ records: parsed }),
+                }).catch(() => {});
+              }
+              break;
+            }
+          }
+
+          if (rowCount > 0) {
+            const successMsg = `ซิงค์เรียลไทม์สำเร็จ (${sheetLabel}) พบ ${rowCount} แถว`;
             setSheetsConfig((prev) => ({
               ...prev,
               lastSyncTime: new Date().toISOString(),
               lastSyncStatus: 'success',
               lastSyncMessage: successMsg,
-              syncedRowCount: parsed.length,
+              syncedRowCount: rowCount,
               syncCount: (prev.syncCount || 0) + 1,
             }));
 
@@ -1003,28 +1379,21 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 type: 'google_sheets',
                 status: 'success',
                 message: successMsg,
-                rowCount: parsed.length,
+                rowCount,
               },
               ...prev.slice(0, 49),
             ]);
-
-            // If backend is running, also persist to server database
-            fetch('/api/records', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ records: parsed }),
-            }).catch(() => {});
 
             setIsSyncingSheets(false);
             return {
               success: true,
               message: successMsg,
-              rowCount: parsed.length,
+              rowCount,
             };
           }
         }
 
-        const failMsg = lastErrorText || 'ไม่พบแถวข้อมูลยอดขายที่ถูกต้องในไฟล์ Google Sheet';
+        const failMsg = lastErrorText || 'ไม่พบแถวข้อมูลที่ถูกต้องในไฟล์ Google Sheet';
         setSheetsConfig((prev) => ({
           ...prev,
           lastSyncTime: new Date().toISOString(),
@@ -1086,6 +1455,12 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, []);
 
+  const toggleClaimVisibility = (id: string) => {
+    setClaimRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, isVisible: r.isVisible === false ? true : false } : r))
+    );
+  };
+
   const resetAllData = () => {
     setRecords(parseRawCsv(RAW_CSV_DATA));
     setSalesReps(INITIAL_SALES_REPS);
@@ -1093,7 +1468,7 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setSidebarItems(INITIAL_SIDEBAR_ITEMS);
     setSettings(DEFAULT_APP_SETTINGS);
     setSheetsConfig(DEFAULT_GOOGLE_SHEETS_CONFIG);
-    setActivePage('overview');
+    setActivePage('dashboard');
     localStorage.clear();
     fetch('/api/reset', { method: 'POST' }).catch((e) => console.warn('Failed to reset server data:', e));
   };
@@ -1138,10 +1513,22 @@ export const SalesProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         toggleSidebarItemVisibility,
         reorderSidebarItems,
         deleteSidebarItem,
+        resetSidebarItems,
         importCsv,
+        importSheetCsv,
         triggerGoogleSheetsSync,
         updateGoogleSheetsConfig,
         resetAllData,
+        leadRows,
+        forecastRows,
+        dbConfigRows,
+        quotationRows,
+        measurementRows,
+        installmentRows,
+        claimRows,
+        activeSheetTab,
+        setActiveSheetTab,
+        toggleClaimVisibility,
       }}
     >
       {children}

@@ -15,6 +15,14 @@ import { AnalyticsView } from './components/analytics/AnalyticsView';
 import { DataSheetView } from './components/datasheet/DataSheetView';
 import { SettingsView } from './components/settings/SettingsView';
 import { CustomPageView } from './components/custom/CustomPageView';
+import { ExecutiveDashboardView } from './components/dashboard/ExecutiveDashboardView';
+import { LeadFollowUpReportView } from './components/lead-followup/LeadFollowUpReportView';
+import { SalesPerformanceView } from './components/sales-performance/SalesPerformanceView';
+import { MeasurementReportView } from './components/measurement/MeasurementReportView';
+import { TargetAchievementReportView } from './components/targets/TargetAchievementReportView';
+import { ConversionRateReportView } from './components/conversion/ConversionRateReportView';
+import { ClaimIssueReportView } from './components/claim/ClaimIssueReportView';
+import { ProgressOfSalesView } from './components/progress/ProgressOfSalesView';
 
 const MainContent: React.FC = () => {
   const { activePage, settings } = useSales();
@@ -22,6 +30,22 @@ const MainContent: React.FC = () => {
 
   const renderActiveView = () => {
     switch (activePage) {
+      case 'dashboard':
+        return <ExecutiveDashboardView />;
+      case 'lead-followup':
+        return <LeadFollowUpReportView />;
+      case 'sales-performance':
+        return <SalesPerformanceView />;
+      case 'measurement-report':
+        return <MeasurementReportView />;
+      case 'target-achievement':
+        return <TargetAchievementReportView />;
+      case 'conversion-rate':
+        return <ConversionRateReportView />;
+      case 'claim-report':
+        return <ClaimIssueReportView />;
+      case 'progress-of-sales':
+        return <ProgressOfSalesView />;
       case 'overview':
         return (
           <div className="space-y-8 animate-fade-in">

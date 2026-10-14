@@ -13,9 +13,15 @@ import {
   X,
   PlusCircle,
   FileText,
+  Calendar,
+  Percent,
+  AlertTriangle,
+  PieChart,
 } from 'lucide-react';
 import { useSales } from '../../context/SalesContext';
 import { THEME_CONFIGS, getThemePrimaryText } from '../../utils/theme';
+import { INITIAL_SIDEBAR_ITEMS } from '../../data/salesDataService';
+import { SidebarMenuItem } from '../../types';
 
 const ICON_MAP: Record<string, React.FC<{ className?: string }>> = {
   LayoutDashboard,
@@ -27,6 +33,10 @@ const ICON_MAP: Record<string, React.FC<{ className?: string }>> = {
   FileSpreadsheet,
   Settings,
   FileText,
+  Calendar,
+  Percent,
+  AlertTriangle,
+  PieChart,
 };
 
 export const Sidebar: React.FC = () => {
@@ -50,9 +60,12 @@ export const Sidebar: React.FC = () => {
     .filter((item) => item.visible)
     .sort((a, b) => a.order - b.order);
 
+  // Safety fallback: if no items are visible, render INITIAL_SIDEBAR_ITEMS
+  const itemsToRender = sortedItems.length > 0 ? sortedItems : INITIAL_SIDEBAR_ITEMS;
+
   const renderNavLinks = () => (
     <div className="space-y-1.5 px-3 py-4">
-      {sortedItems.map((item) => {
+      {itemsToRender.map((item: SidebarMenuItem) => {
         const IconComponent = ICON_MAP[item.icon] || FileText;
         const isActive = activePage === item.id;
 
@@ -68,10 +81,10 @@ export const Sidebar: React.FC = () => {
             className={`w-full group flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs sm:text-sm font-medium transition-all duration-200 relative overflow-hidden ${
               isActive
                 ? isLight
-                  ? 'bg-gradient-to-r from-cyan-500/20 via-sky-500/10 to-transparent text-cyan-900 border border-cyan-500/30 border-t-white shadow-md'
+                  ? 'bg-cyan-50 text-cyan-900 border border-cyan-300 font-semibold shadow-xs'
                   : 'bg-gradient-to-r from-cyan-500/25 via-sky-500/15 to-blue-600/10 text-cyan-200 border border-cyan-400/35 border-t-white/35 shadow-lg shadow-cyan-950/60'
                 : isLight
-                ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 border border-transparent'
+                ? 'text-slate-700 hover:text-slate-950 hover:bg-slate-100/90 border border-transparent font-medium'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] border border-transparent hover:border-white/[0.06]'
             }`}
           >
